@@ -1,4 +1,8 @@
-"""Main application window with Overlay / Side-by-Side mode toggle."""
+"""ClustroView - Clustering Comparison page.
+
+Layout: left fixed nav sidebar + right scrollable content.
+Single toggle: Side-by-Side / 3D Flip (per request.md).
+"""
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
@@ -10,429 +14,417 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QScrollArea,
     QSlider,
     QStatusBar,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 from model.image_manager import ImageCollection
 from model.overlay_data import OverlayDataset
 from view.comparison_view import ComparisonViewWidget
-from view.overlay_view import OverlayViewWidget
+from view.overlay_3d_view import Overlay3DViewWidget
 from view.status_bar import ParamsWidget, StatusBarWidget
 from view.training_curve import TrainingCurveWidget
 
 
-# ---- Palette definitions ----
+# ====================================================================
+#  Palette
+# ====================================================================
 
-_DARK_PALETTE = {
-    "Window": (45, 45, 45),
-    "WindowText": (220, 220, 220),
-    "Base": (30, 30, 30),
-    "AlternateBase": (45, 45, 45),
-    "ToolTipBase": (220, 220, 220),
-    "ToolTipText": (0, 0, 0),
-    "Text": (220, 220, 220),
-    "Button": (50, 50, 50),
-    "ButtonText": (220, 220, 220),
-    "BrightText": (255, 100, 100),
-    "Link": (42, 130, 218),
-    "Highlight": (42, 130, 218),
-    "HighlightedText": (220, 220, 220),
+_DARK = {
+    "Window": (23, 23, 23), "WindowText": (245, 245, 247),
+    "Base": (35, 35, 38), "AlternateBase": (30, 30, 33),
+    "Text": (245, 245, 247), "Button": (40, 40, 44),
+    "ButtonText": (245, 245, 247), "BrightText": (255, 77, 79),
+    "Link": (100, 180, 255), "Highlight": (100, 180, 255),
+    "HighlightedText": (23, 23, 23),
 }
 
-_LIGHT_PALETTE = {
-    "Window": (240, 240, 240),
-    "WindowText": (30, 30, 30),
-    "Base": (255, 255, 255),
-    "AlternateBase": (230, 230, 230),
-    "ToolTipBase": (255, 255, 220),
-    "ToolTipText": (0, 0, 0),
-    "Text": (30, 30, 30),
-    "Button": (225, 225, 225),
-    "ButtonText": (30, 30, 30),
-    "BrightText": (200, 50, 50),
-    "Link": (0, 100, 200),
-    "Highlight": (0, 120, 215),
-    "HighlightedText": (255, 255, 255),
+_LIGHT = {
+    "Window": (250, 250, 250), "WindowText": (46, 46, 46),
+    "Base": (245, 245, 245), "AlternateBase": (240, 240, 240),
+    "Text": (46, 46, 46), "Button": (235, 235, 235),
+    "ButtonText": (46, 46, 46), "BrightText": (255, 77, 79),
+    "Link": (50, 130, 220), "Highlight": (50, 130, 220),
+    "HighlightedText": (250, 250, 250),
 }
 
-# ---- Theme styles ----
+# ====================================================================
+#  Glass sidebar
+# ====================================================================
 
-_FRAME_DARK = "QFrame { border: 1px solid #555; border-radius: 4px; }"
-_FRAME_LIGHT = "QFrame { border: 1px solid #ccc; border-radius: 4px; }"
-
-_NAV_BTN_DARK = (
-    "QPushButton { font-size: 16px; border: 1px solid #666; "
-    "border-radius: 4px; background: #333; color: #eee; }"
-    "QPushButton:hover { background: #555; }"
+_SB_DARK = (
+    "QFrame { background: #1e1e21;"
+    " border-right: 1px solid rgba(255,255,255,0.06); }"
 )
-_NAV_BTN_LIGHT = (
-    "QPushButton { font-size: 16px; border: 1px solid #bbb; "
-    "border-radius: 4px; background: #e0e0e0; color: #222; }"
-    "QPushButton:hover { background: #ccc; }"
+_SB_LIGHT = (
+    "QFrame { background: #f5f5f5;"
+    " border-right: 1px solid #e6e6e6; }"
 )
 
-_THEME_BTN_DARK = (
-    "QPushButton { font-size: 12px; border: 1px solid #666; "
-    "border-radius: 4px; background: #444; color: #eee; }"
-    "QPushButton:hover { background: #666; }"
+_LBL_D = "color: #8a8a90; font-size: 9px; letter-spacing: 1px;"
+_LBL_L = "color: #8a8a8a; font-size: 9px; letter-spacing: 1px;"
+
+_SEP_D = "color: rgba(255,255,255,0.06); font-size: 8px;"
+_SEP_L = "color: rgba(0,0,0,0.08); font-size: 8px;"
+
+_CNT_D = "color: #8a8a90; font-size: 10px;"
+_CNT_L = "color: rgba(0,0,0,0.38); font-size: 10px;"
+
+# ---- Single mode toggle button ----
+_TOGGLE_D = (
+    "QPushButton { font-size: 10px; padding: 5px 0;"
+    " border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;"
+    " background: rgba(255,255,255,0.04); color: #8a8a90; }"
+    "QPushButton:hover { background: rgba(255,255,255,0.08); }"
+    "QPushButton:checked {"
+    " background: rgba(100,180,255,0.15); color: #f5f5f7;"
+    " border-color: rgba(100,180,255,0.30); font-weight: 600; }"
 )
-_THEME_BTN_LIGHT = (
-    "QPushButton { font-size: 12px; border: 1px solid #bbb; "
-    "border-radius: 4px; background: #ddd; color: #222; }"
-    "QPushButton:hover { background: #ccc; }"
+_TOGGLE_L = (
+    "QPushButton { font-size: 10px; padding: 5px 0;"
+    " border: 1px solid rgba(0,0,0,0.07); border-radius: 6px;"
+    " background: rgba(0,0,0,0.02); color: rgba(0,0,0,0.45); }"
+    "QPushButton:hover { background: rgba(0,0,0,0.05); }"
+    "QPushButton:checked {"
+    " background: rgba(50,130,220,0.15); color: #1a6bc0;"
+    " border-color: rgba(50,130,220,0.35); font-weight: 600; }"
 )
 
-_MODE_BTN_DARK = (
-    "QPushButton { font-size: 14px; padding: 4px 16px; "
-    "border: 1px solid #666; border-radius: 4px; "
-    "background: #333; color: #eee; }"
-    "QPushButton:hover { background: #555; }"
-    "QPushButton:checked { background: #2980b9; color: #fff; border-color: #2980b9; }"
+_NAV_D = (
+    "QPushButton { font-size: 11px; min-width: 24px; max-width: 24px;"
+    " min-height: 20px; max-height: 20px;"
+    " border: 1px solid rgba(255,255,255,0.06); border-radius: 6px;"
+    " background: rgba(255,255,255,0.03); color: #8a8a90; }"
+    "QPushButton:hover { background: rgba(255,255,255,0.08); }"
 )
-_MODE_BTN_LIGHT = (
-    "QPushButton { font-size: 14px; padding: 4px 16px; "
-    "border: 1px solid #aaa; border-radius: 4px; "
-    "background: #f0f0f0; color: #222; }"
-    "QPushButton:hover { background: #ddd; }"
-    "QPushButton:checked { background: #3498db; color: #fff; border-color: #3498db; }"
+_NAV_L = (
+    "QPushButton { font-size: 11px; min-width: 24px; max-width: 24px;"
+    " min-height: 20px; max-height: 20px;"
+    " border: 1px solid rgba(0,0,0,0.05); border-radius: 4px;"
+    " background: rgba(0,0,0,0.02); color: rgba(0,0,0,0.40); }"
+    "QPushButton:hover { background: rgba(0,0,0,0.05); }"
 )
 
+_THM_D = (
+    "QPushButton { font-size: 10px; padding: 4px 10px;"
+    " border: 1px solid rgba(255,255,255,0.06); border-radius: 8px;"
+    " background: rgba(255,255,255,0.03); color: #8a8a90; }"
+    "QPushButton:hover { background: rgba(255,255,255,0.08); }"
+)
+_THM_L = (
+    "QPushButton { font-size: 10px; padding: 3px 8px;"
+    " border: 1px solid rgba(0,0,0,0.05); border-radius: 5px;"
+    " background: rgba(0,0,0,0.02); color: rgba(0,0,0,0.38); }"
+    "QPushButton:hover { background: rgba(0,0,0,0.04); }"
+)
 
-def apply_theme(dark: bool) -> None:
-    """Apply dark or light palette to QApplication."""
+_CONT_D = "background-color: #171717;"
+_CONT_L = "background-color: #fafafa;"
+
+
+def apply_theme(dark: bool):
     app = QApplication.instance()
-    if app is None:
-        return
-    colors = _DARK_PALETTE if dark else _LIGHT_PALETTE
+    if app is None: return
     palette = QPalette()
-    for role_name, rgb in colors.items():
+    src = _DARK if dark else _LIGHT
+    for role_name, rgb in src.items():
         role = getattr(QPalette.ColorRole, role_name, None)
         if role is not None:
             palette.setColor(role, QColor(*rgb))
     app.setPalette(palette)
 
 
+# ====================================================================
+#  Main window
+# ====================================================================
+
 class MainWindow(QMainWindow):
-    """Main application window with overlay / side-by-side toggle."""
+    SIDEBAR_W = 220
 
     def __init__(self, controller=None):
         super().__init__()
         self._controller = controller
         self._collection: Optional[ImageCollection] = None
         self._overlay_datasets: list[OverlayDataset] = []
-        self._current_index: int = 0
-        self._dark_theme: bool = True
-        self._is_overlay_mode: bool = False
+        self._current_index = 0
+        self._dark_theme = False  # default light per request.md
+        self._is_3dflip_mode = False
 
-        self.setWindowTitle("Spatial Clustering Comparison Viewer")
-        self.setMinimumSize(1200, 800)
+        self.setWindowTitle("ClustroView - Clustering Comparison")
+        self.setMinimumSize(1050, 650)
         self._setup_ui()
 
-        self._lazy_timer = QTimer(self)
-        self._lazy_timer.setSingleShot(True)
-        self._lazy_timer.setInterval(150)
-        self._lazy_timer.timeout.connect(self._on_lazy_load)
+        self._lazy = QTimer(self); self._lazy.setSingleShot(True)
+        self._lazy.setInterval(100)
+        self._lazy.timeout.connect(self._on_lazy)
 
-    def set_controller(self, controller) -> None:
-        """Set controller reference for navigation callbacks."""
-        self._controller = controller
+    def set_controller(self, c):
+        self._controller = c
 
-    def _setup_ui(self) -> None:
+    # ================================================================
+    #  UI
+    # ================================================================
+
+    def _setup_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(6)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
-        # ---- Top frame ----
-        self.status_bar_widget = StatusBarWidget()
-        self.params_widget = ParamsWidget()
+        # --- Sidebar ---
+        self._sidebar = QFrame()
+        self._sidebar.setFixedWidth(self.SIDEBAR_W)
+        self._sidebar.setStyleSheet(_SB_LIGHT)  # light by default
+        sb = QVBoxLayout(self._sidebar)
+        sb.setContentsMargins(10, 14, 10, 12); sb.setSpacing(5)
 
-        self._top_frame = QFrame()
-        self._top_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        self._top_frame.setStyleSheet(_FRAME_DARK)
-        top_layout = QVBoxLayout(self._top_frame)
-        top_layout.setContentsMargins(4, 4, 4, 4)
+        # Single mode toggle
+        ml = QLabel("VIEW MODE"); ml.setStyleSheet(_LBL_L); sb.addWidget(ml)
+        self._btn_sbs = QPushButton("Side-by-Side")
+        self._btn_sbs.setCheckable(True); self._btn_sbs.setChecked(True)
+        self._btn_sbs.clicked.connect(lambda: self._set_mode(False))
+        self._btn_sbs.setStyleSheet(_TOGGLE_L)
+        self._btn_3df = QPushButton("3D Flip")
+        self._btn_3df.setCheckable(True)
+        self._btn_3df.clicked.connect(lambda: self._set_mode(True))
+        self._btn_3df.setStyleSheet(_TOGGLE_L)
+        tr = QHBoxLayout(); tr.setSpacing(4)
+        tr.addWidget(self._btn_sbs, 1); tr.addWidget(self._btn_3df, 1)
+        sb.addLayout(tr); sb.addSpacing(8)
 
-        top_row = QHBoxLayout()
-        top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.addWidget(self.status_bar_widget, 1)
-
-        self._theme_btn = QPushButton("☀️ Light")
-        self._theme_btn.setFixedSize(100, 26)
-        self._theme_btn.setStyleSheet(_THEME_BTN_DARK)
-        self._theme_btn.clicked.connect(self._toggle_theme)
-
-        btn_container = QHBoxLayout()
-        btn_container.addStretch()
-        btn_container.addWidget(self._theme_btn)
-        top_row.addLayout(btn_container)
-
-        top_layout.addLayout(top_row)
-        top_layout.addWidget(self.params_widget)
-        main_layout.addWidget(self._top_frame)
-
-        # ---- Curve frame ----
-        self.curve_widget = TrainingCurveWidget()
-
-        self._curve_frame = QFrame()
-        self._curve_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        self._curve_frame.setStyleSheet(_FRAME_DARK)
-        curve_layout = QVBoxLayout(self._curve_frame)
-        curve_layout.setContentsMargins(4, 4, 4, 4)
-        curve_layout.addWidget(self.curve_widget)
-        main_layout.addWidget(self._curve_frame, 2)
-
-        # ---- Comparison frame with mode toggle ----
-        self.comparison_widget = ComparisonViewWidget()
-        self.overlay_widget = OverlayViewWidget()
-        self.overlay_widget.setVisible(False)
-
-        self._comp_frame = QFrame()
-        self._comp_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        self._comp_frame.setStyleSheet(_FRAME_DARK)
-        comp_layout = QVBoxLayout(self._comp_frame)
-        comp_layout.setContentsMargins(4, 4, 4, 4)
-
-        # Nav bar with mode toggle
-        nav_layout = QHBoxLayout()
-        nav_layout.setSpacing(8)
-
+        # Nav
+        nl = QLabel("NAVIGATION"); nl.setStyleSheet(_LBL_L); sb.addWidget(nl)
+        nr = QHBoxLayout(); nr.setSpacing(4)
+        self._prev = QPushButton(chr(0x25C0)); self._prev.setStyleSheet(_NAV_L)
+        self._prev.clicked.connect(self._go_prev)
+        self._next = QPushButton(chr(0x25B6)); self._next.setStyleSheet(_NAV_L)
+        self._next.clicked.connect(self._go_next)
+        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider.setMinimum(0); self._slider.setMaximum(0)
+        self._slider.valueChanged.connect(self._on_slider)
+        nr.addWidget(self._prev); nr.addWidget(self._slider, 1); nr.addWidget(self._next)
+        sb.addLayout(nr)
         self._nav_label = QLabel("Image: 0 / 0")
-        self._nav_label.setStyleSheet("font-size: 13px;")
+        self._nav_label.setStyleSheet(_CNT_L)
+        self._nav_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sb.addWidget(self._nav_label); sb.addSpacing(6)
 
-        self._prev_btn = QPushButton("◀")
-        self._prev_btn.setFixedSize(32, 28)
-        self._prev_btn.setStyleSheet(_NAV_BTN_DARK)
-        self._prev_btn.clicked.connect(self._prev_image)
+        s1 = QLabel(chr(0x2500)*12); s1.setStyleSheet(_SEP_L)
+        s1.setAlignment(Qt.AlignmentFlag.AlignCenter); sb.addWidget(s1)
 
-        self._next_btn = QPushButton("▶")
-        self._next_btn.setFixedSize(32, 28)
-        self._next_btn.setStyleSheet(_NAV_BTN_DARK)
-        self._next_btn.clicked.connect(self._next_image)
+        self.status_bar_widget = StatusBarWidget(); sb.addWidget(self.status_bar_widget)
+        sb.addSpacing(2)
+        s2 = QLabel(chr(0x2500)*12); s2.setStyleSheet(_SEP_L)
+        s2.setAlignment(Qt.AlignmentFlag.AlignCenter); sb.addWidget(s2)
 
-        self._nav_slider = QSlider(Qt.Orientation.Horizontal)
-        self._nav_slider.setMinimum(0)
-        self._nav_slider.setMaximum(0)
-        self._nav_slider.valueChanged.connect(self._on_slider_changed)
+        self.params_widget = ParamsWidget(); sb.addWidget(self.params_widget)
+        sb.addStretch()
 
-        # Mode toggle
-        self._overlay_btn = QPushButton("Overlay")
-        self._overlay_btn.setFixedSize(90, 28)
-        self._overlay_btn.setStyleSheet(_MODE_BTN_DARK)
-        self._overlay_btn.setCheckable(True)
-        self._overlay_btn.clicked.connect(self._toggle_mode)
+        self._theme_btn = QPushButton(chr(0x2600)+"  Light")
+        self._theme_btn.setStyleSheet(_THM_L)
+        self._theme_btn.clicked.connect(self._toggle_theme); sb.addWidget(self._theme_btn)
 
-        self._sidebyside_btn = QPushButton("Side-by-Side")
-        self._sidebyside_btn.setFixedSize(110, 28)
-        self._sidebyside_btn.setStyleSheet(_MODE_BTN_DARK)
-        self._sidebyside_btn.setCheckable(True)
-        self._sidebyside_btn.setChecked(True)
-        self._sidebyside_btn.clicked.connect(self._toggle_mode)
+        self._s_lbls = [ml, nl]; self._s_seps = [s1, s2]
 
-        nav_layout.addWidget(self._prev_btn)
-        nav_layout.addWidget(self._nav_slider, 1)
-        nav_layout.addWidget(self._next_btn)
-        nav_layout.addSpacing(8)
-        nav_layout.addWidget(self._overlay_btn)
-        nav_layout.addWidget(self._sidebyside_btn)
+        # --- Right content ---
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setStyleSheet("QScrollArea { border: none; " + _CONT_D + " }")
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        comp_layout.addLayout(nav_layout)
-        comp_layout.addWidget(self.comparison_widget, 1)
-        comp_layout.addWidget(self.overlay_widget, 1)
-        main_layout.addWidget(self._comp_frame, 3)
+        cw = QWidget(); cw.setStyleSheet(_CONT_D)
+        cl = QVBoxLayout(cw); cl.setContentsMargins(12, 12, 12, 12); cl.setSpacing(6)
 
-        self._qt_status_bar = QStatusBar()
-        self.setStatusBar(self._qt_status_bar)
+        # Title area
+        title_row = QHBoxLayout()
+        title_l = QLabel("Clustering Comparison")
+        title_l.setStyleSheet(
+            "font-size: 18px; font-weight: 700; color: #2e2e2e; padding: 0;"
+        )
+        subtitle_l = QLabel("Compare ground truth vs prediction results")
+        subtitle_l.setStyleSheet(
+            "font-size: 11px; color: #999; padding: 2px 0 0 0;"
+        )
+        tv = QVBoxLayout()
+        tv.addWidget(title_l); tv.addWidget(subtitle_l)
+        title_row.addLayout(tv, 1)
+        ds_label = QLabel("DLPFC")
+        ds_label.setStyleSheet(
+            "font-size: 11px; color: #666; padding: 4px 10px;"
+            " border: 1px solid #ddd; border-radius: 4px; background: #fafafa;"
+        )
+        title_row.addWidget(ds_label)
+        cl.addLayout(title_row)
+        cl.addSpacing(4)
 
-    # ---- Theme ----
+        # Comparison content
+        self.comparison_widget = ComparisonViewWidget()
+        self.comparison_widget.setMinimumHeight(350)
+        self._3d_widget = Overlay3DViewWidget()
+        self._3d_widget.setMinimumHeight(350); self._3d_widget.setVisible(False)
 
-    def _toggle_theme(self) -> None:
+        cl.addWidget(self.comparison_widget, 4)
+        cl.addWidget(self._3d_widget, 4)
+
+        # Curve
+        self._curve_label = QLabel("Training Progress")
+        self._curve_label.setStyleSheet(
+            "color: #999; font-size: 10px; font-weight: 600; padding: 4px 0 2px;"
+        )
+        cl.addWidget(self._curve_label)
+        self.curve_widget = TrainingCurveWidget()
+        self.curve_widget.setFixedHeight(170)
+        cl.addWidget(self.curve_widget)
+        cl.addStretch()
+
+        self._scroll.setWidget(cw)
+        root.addWidget(self._sidebar)
+        root.addWidget(self._scroll, 1)
+
+        self._qt_status = QStatusBar(); self.setStatusBar(self._qt_status)
+
+        # Apply initial theme
+        apply_theme(False)
+
+    # ================================================================
+    #  Theme
+    # ================================================================
+
+    def _toggle_theme(self):
         self._dark_theme = not self._dark_theme
-        apply_theme(self._dark_theme)
-        self._theme_btn.setText(
-            "☀️ Light" if self._dark_theme else "🌙 Dark"
+        d = self._dark_theme
+        apply_theme(d)
+        self._theme_btn.setText((chr(0x263E)+"  Dark") if d else (chr(0x2600)+"  Light"))
+
+        self._sidebar.setStyleSheet(_SB_DARK if d else _SB_LIGHT)
+        ls = _LBL_D if d else _LBL_L
+        for w in self._s_lbls: w.setStyleSheet(ls)
+        self._nav_label.setStyleSheet(_CNT_D if d else _CNT_L)
+        ss = _SEP_D if d else _SEP_L
+        for w in self._s_seps: w.setStyleSheet(ss)
+
+        ts = _TOGGLE_D if d else _TOGGLE_L
+        self._btn_sbs.setStyleSheet(ts); self._btn_3df.setStyleSheet(ts)
+        ns = _NAV_D if d else _NAV_L
+        self._prev.setStyleSheet(ns); self._next.setStyleSheet(ns)
+        self._theme_btn.setStyleSheet(_THM_D if d else _THM_L)
+
+        self._scroll.setStyleSheet(
+            "QScrollArea { border: none; " + (_CONT_D if d else _CONT_L) + " }"
         )
-        style = _FRAME_DARK if self._dark_theme else _FRAME_LIGHT
-        self._top_frame.setStyleSheet(style)
-        self._curve_frame.setStyleSheet(style)
-        self._comp_frame.setStyleSheet(style)
-
-        nav_style = _NAV_BTN_DARK if self._dark_theme else _NAV_BTN_LIGHT
-        self._prev_btn.setStyleSheet(nav_style)
-        self._next_btn.setStyleSheet(nav_style)
-        self._theme_btn.setStyleSheet(
-            _THEME_BTN_DARK if self._dark_theme else _THEME_BTN_LIGHT
+        self._scroll.widget().setStyleSheet(_CONT_D if d else _CONT_L)
+        self._curve_label.setStyleSheet(
+            ("color: rgba(255,255,255,0.35);" if d else "color: #999;")
+            + " font-size: 10px; font-weight: 600; padding: 4px 0 2px;"
         )
-        mode_style = _MODE_BTN_DARK if self._dark_theme else _MODE_BTN_LIGHT
-        self._overlay_btn.setStyleSheet(mode_style)
-        self._sidebyside_btn.setStyleSheet(mode_style)
+        self.comparison_widget.update_theme(d)
+        self._3d_widget.update_theme(d)
+        self.curve_widget.update_theme(d)
+        self.status_bar_widget.update_theme(d)
+        self.params_widget.update_theme(d)
 
-        self.comparison_widget.update_theme(self._dark_theme)
-        self.overlay_widget.update_theme(self._dark_theme)
-        self.curve_widget.update_theme(self._dark_theme)
-        self.status_bar_widget.update_theme(self._dark_theme)
-        self.params_widget.update_theme(self._dark_theme)
+    # ================================================================
+    #  Mode
+    # ================================================================
 
-    # ---- Mode Toggle ----
-
-    def _toggle_mode(self) -> None:
-        sender = self.sender()
-        if sender is self._overlay_btn:
-            self._is_overlay_mode = True
-            self._overlay_btn.setChecked(True)
-            self._sidebyside_btn.setChecked(False)
-        else:
-            self._is_overlay_mode = False
-            self._overlay_btn.setChecked(False)
-            self._sidebyside_btn.setChecked(True)
-
+    def _set_mode(self, is_3dflip):
+        self._is_3dflip_mode = is_3dflip
+        self._btn_sbs.setChecked(not is_3dflip)
+        self._btn_3df.setChecked(is_3dflip)
         self._apply_mode()
 
-    def _apply_mode(self) -> None:
-        if self._is_overlay_mode:
-            self._switch_to_overlay()
-        else:
-            self._switch_to_sidebyside()
-
-    def _switch_to_overlay(self) -> None:
-        self.comparison_widget.setVisible(False)
-        self.overlay_widget.setVisible(True)
-
-        count = len(self._overlay_datasets)
-        self._nav_label.setText(
-            f"Section: {self._current_index + 1} / {max(count, 1)}"
-        )
-        self._nav_slider.setMaximum(max(count - 1, 0))
-        self._nav_slider.setValue(self._current_index)
-        self._prev_btn.setEnabled(count > 1)
-        self._next_btn.setEnabled(count > 1)
-
-        if self._controller and self._overlay_datasets:
-            self._controller.show_overlay_at(self._current_index)
-
-    def _switch_to_sidebyside(self) -> None:
-        self.overlay_widget.setVisible(False)
-        self.comparison_widget.setVisible(True)
-
-        if self._collection:
-            count = len(self._collection.pairs)
+    def _apply_mode(self):
+        if self._is_3dflip_mode:
+            self.comparison_widget.setVisible(False)
+            self._3d_widget.setVisible(True)
+            n = len(self._overlay_datasets)
             self._nav_label.setText(
-                f"Image: {self._current_index + 1} / {max(count, 1)}"
+                "Section: " + str(self._current_index+1) + " / " + str(max(n,1))
             )
-            self._nav_slider.setMaximum(max(count - 1, 0))
-            self._nav_slider.setValue(self._current_index)
-            self._prev_btn.setEnabled(count > 1)
-            self._next_btn.setEnabled(count > 1)
-            self._show_image(self._current_index)
-
-    # ---- Public API ----
-
-    def set_overlay_datasets(self, datasets: list[OverlayDataset]) -> None:
-        """Store overlay datasets and show first if in overlay mode."""
-        self._overlay_datasets = datasets
-        self._current_index = 0
-
-        if not datasets:
-            self.overlay_widget.show_no_data()
-            return
-
-        self._nav_slider.setMaximum(len(datasets) - 1)
-        self._nav_slider.setValue(0)
-        self._prev_btn.setEnabled(len(datasets) > 1)
-        self._next_btn.setEnabled(len(datasets) > 1)
-
-        if self._is_overlay_mode:
-            self._switch_to_overlay()
-
-    def show_overlay_dataset(self, dataset: OverlayDataset, index: int) -> None:
-        """Display a specific overlay dataset."""
-        self._current_index = index
-        count = len(self._overlay_datasets)
-        self._nav_label.setText(
-            f"Section: {index + 1} / {max(count, 1)}"
-        )
-        self._nav_slider.setValue(index)
-        self.overlay_widget.set_dataset(dataset)
-
-    def set_collection(self, collection: ImageCollection) -> None:
-        """Store image collection and show first."""
-        self._collection = collection
-        self._current_index = 0
-
-        if not collection.pairs:
-            self._nav_slider.setMaximum(0)
-            self._prev_btn.setEnabled(False)
-            self._next_btn.setEnabled(False)
-            self._nav_label.setText("Image: 0 / 0")
-            self.comparison_widget.show_no_data()
-            return
-
-        self._nav_slider.setMaximum(len(collection.pairs) - 1)
-        self._nav_slider.setValue(0)
-        self._prev_btn.setEnabled(True)
-        self._next_btn.setEnabled(True)
-
-        if not self._is_overlay_mode:
-            self._show_image(0)
-
-    def show_image(self, index: int) -> None:
-        """Show image at index (public for controller)."""
-        self._show_image(index)
-
-    def _show_image(self, index: int) -> None:
-        if self._is_overlay_mode:
-            return
-        if not self._collection or not self._collection.pairs:
-            return
-        if index < 0 or index >= len(self._collection.pairs):
-            return
-
-        self._current_index = index
-        pair = self._collection.pairs[index]
-        self._nav_label.setText(
-            f"Image: {index + 1} / {len(self._collection.pairs)}"
-        )
-
-        if self._collection.fallback_mode:
-            self.comparison_widget.show_fallback(pair)
+            self._slider.setMaximum(max(n-1,0)); self._slider.setValue(self._current_index)
+            self._prev.setEnabled(n>1); self._next.setEnabled(n>1)
+            if self._controller and self._overlay_datasets:
+                self._controller.show_overlay_at(self._current_index)
         else:
-            self.comparison_widget.show_pair(pair)
+            self._3d_widget.setVisible(False)
+            self.comparison_widget.setVisible(True)
+            if self._collection:
+                n = len(self._collection.pairs)
+                self._nav_label.setText(
+                    "Image: " + str(self._current_index+1) + " / " + str(max(n,1))
+                )
+                self._slider.setMaximum(max(n-1,0)); self._slider.setValue(self._current_index)
+                self._prev.setEnabled(n>1); self._next.setEnabled(n>1)
+                self._show_image(self._current_index)
 
+    # ================================================================
+    #  Public
+    # ================================================================
+
+    def set_overlay_datasets(self, dss):
+        self._overlay_datasets = dss; self._current_index = 0
+        if not dss:
+            self._3d_widget.show_no_data(); return
+        self._slider.setMaximum(len(dss)-1); self._slider.setValue(0)
+        self._prev.setEnabled(len(dss)>1); self._next.setEnabled(len(dss)>1)
+        if self._is_3dflip_mode: self._apply_mode()
+
+    def show_overlay_dataset(self, ds, idx):
+        self._current_index = idx
+        n = len(self._overlay_datasets)
+        self._nav_label.setText("Section: "+str(idx+1)+" / "+str(max(n,1)))
+        self._slider.setValue(idx)
+        self._3d_widget.set_dataset(ds)
+
+    def set_collection(self, coll):
+        self._collection = coll; self._current_index = 0
+        if not coll.pairs:
+            self._slider.setMaximum(0)
+            self._prev.setEnabled(False); self._next.setEnabled(False)
+            self._nav_label.setText("Image: 0 / 0")
+            self.comparison_widget.show_no_data(); return
+        self._slider.setMaximum(len(coll.pairs)-1); self._slider.setValue(0)
+        self._prev.setEnabled(True); self._next.setEnabled(True)
+        if not self._is_3dflip_mode: self._show_image(0)
+
+    def show_image(self, idx): self._show_image(idx)
+
+    def _show_image(self, idx):
+        if self._is_3dflip_mode: return
+        if not self._collection or not self._collection.pairs: return
+        if idx < 0 or idx >= len(self._collection.pairs): return
+        self._current_index = idx
+        p = self._collection.pairs[idx]
+        self._nav_label.setText("Image: "+str(idx+1)+" / "+str(len(self._collection.pairs)))
+        if self._collection.fallback_mode:
+            self.comparison_widget.show_fallback(p)
+        else:
+            self.comparison_widget.show_pair(p)
         if self.comparison_widget.sync_locked:
             self.comparison_widget._gt_panel.image_label.reset_view(emit=False)
             self.comparison_widget._pred_panel.image_label.reset_view(emit=False)
 
-    def _prev_image(self) -> None:
-        if self._is_overlay_mode:
-            if self._current_index > 0:
-                self._nav_slider.setValue(self._current_index - 1)
-        else:
-            if self._current_index > 0:
-                self._nav_slider.setValue(self._current_index - 1)
+    # ================================================================
+    #  Nav
+    # ================================================================
 
-    def _next_image(self) -> None:
-        max_idx = (
-            len(self._overlay_datasets) - 1
-            if self._is_overlay_mode
-            else (len(self._collection.pairs) - 1 if self._collection else 0)
-        )
-        if self._current_index < max_idx:
-            self._nav_slider.setValue(self._current_index + 1)
-
-    def _on_slider_changed(self, value: int) -> None:
-        self._lazy_timer.start()
-
-    def _on_lazy_load(self) -> None:
-        idx = self._nav_slider.value()
-        if self._is_overlay_mode:
-            if self._controller:
-                self._controller.show_overlay_at(idx)
+    def _go_prev(self):
+        if self._current_index > 0: self._slider.setValue(self._current_index-1)
+    def _go_next(self):
+        mx = (len(self._overlay_datasets)-1 if self._is_3dflip_mode
+              else (len(self._collection.pairs)-1 if self._collection else 0))
+        if self._current_index < mx: self._slider.setValue(self._current_index+1)
+    def _on_slider(self, v): self._lazy.start()
+    def _on_lazy(self):
+        idx = self._slider.value()
+        if self._is_3dflip_mode:
+            if self._controller: self._controller.show_overlay_at(idx)
         else:
             self._show_image(idx)
 
-    def show_status_message(self, message: str) -> None:
-        self._qt_status_bar.showMessage(message, 5000)
+    def show_status_message(self, msg):
+        self._qt_status.showMessage(msg, 4000)

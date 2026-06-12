@@ -5,3 +5,5 @@ matplotlib>=3.7
 opencv-python>=4.8
 numpy>=1.24
 python>=3.10
+pyvista>=0.43
+pyvistaqt>=0.11

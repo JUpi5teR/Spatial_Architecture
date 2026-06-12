@@ -1,8 +1,9 @@
+"""Side-by-side image comparison view with zoom, pan, and sync."""
 from typing import Optional
 
 import numpy as np
 from PySide6.QtCore import Qt, QPoint, Signal
-from PySide6.QtGui import QImage, QPixmap, QPainter, QMouseEvent, QWheelEvent
+from PySide6.QtGui import QImage, QPixmap, QPainter
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -20,33 +21,38 @@ from utils.logger import logger
 
 # ---- Theme styles ----
 
-_IMAGE_BG_DARK = "#1e1e1e"
-_IMAGE_BG_LIGHT = "#555555"
+_IMAGE_BG_DARK = "#1a1a1e"
+_IMAGE_BG_LIGHT = "#ececec"
 
-_TITLE_STYLE_DARK = "font-weight: bold; font-size: 14px; color: #ecf0f1; padding: 4px;"
-_TITLE_STYLE_LIGHT = "font-weight: bold; font-size: 14px; color: #2c3e50; padding: 4px;"
+_TITLE_DARK = (
+    "font-weight: bold; font-size: 13px; color: #d0d0d5; padding: 2px 8px;"
+)
+_TITLE_LIGHT = (
+    "font-weight: bold; font-size: 13px; color: #2c3e50; padding: 2px 8px;"
+)
 
-_SCROLL_DARK = "background-color: #1e1e1e; border: 1px solid #444;"
-_SCROLL_LIGHT = "background-color: #555555; border: 1px solid #bbb;"
-
-_SEP_DARK = "color: #555;"
-_SEP_LIGHT = "color: #ccc;"
+_SCROLL_DARK = "background-color: #1a1a1e; border: none;"
+_SCROLL_LIGHT = "background-color: #ececec; border: none;"
 
 _BTN_DARK = (
     "QPushButton { font-size: 12px; padding: 2px 12px; "
-    "border: 1px solid #666; border-radius: 4px; background: #333; color: #eee; }"
-    "QPushButton:hover { background: #555; }"
-    "QPushButton:checked { background: #27ae60; color: #fff; border-color: #27ae60; }"
+    "border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; "
+    "background: rgba(255,255,255,0.04); color: #b0b0b5; }"
+    "QPushButton:hover { background: rgba(255,255,255,0.08); }"
+    "QPushButton:checked { background: rgba(46,204,113,0.20); color: #2ecc71; border-color: rgba(46,204,113,0.3); }"
 )
 _BTN_LIGHT = (
     "QPushButton { font-size: 12px; padding: 2px 12px; "
-    "border: 1px solid #aaa; border-radius: 4px; background: #f0f0f0; color: #222; }"
+    "border: 1px solid #bbb; border-radius: 4px; background: #eee; color: #222; }"
     "QPushButton:hover { background: #ddd; }"
-    "QPushButton:checked { background: #27ae60; color: #fff; border-color: #27ae60; }"
+    "QPushButton:checked { background: #2ecc71; color: #fff; border-color: #2ecc71; }"
 )
 
-_NO_DATA_DARK = "color: #95a5a6; font-size: 18px;"
+_NO_DATA_DARK = "color: #6a6a70; font-size: 18px;"
 _NO_DATA_LIGHT = "color: #7f8c8d; font-size: 18px;"
+
+_LABEL_DARK = "color: #8a8a90; font-size: 11px; padding: 2px 8px;"
+_LABEL_LIGHT = "color: #7f8c8d; font-size: 11px; padding: 2px 8px;"
 
 
 class ZoomableImageLabel(QLabel):
@@ -67,7 +73,9 @@ class ZoomableImageLabel(QLabel):
         self._dark: bool = True
 
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self.setMinimumSize(200, 150)
         self.setMouseTracking(True)
         self._apply_bg()
@@ -85,7 +93,9 @@ class ZoomableImageLabel(QLabel):
     def set_image(self, image: np.ndarray) -> None:
         h, w, ch = image.shape
         bytes_per_line = ch * w
-        qimage = QImage(image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        qimage = QImage(
+            image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888
+        )
         self._original_pixmap = QPixmap.fromImage(qimage)
         self._zoom_factor = 1.0
         self._pan_offset = QPoint(0, 0)
@@ -144,166 +154,141 @@ class ZoomableImageLabel(QLabel):
         painter.end()
         self.setPixmap(pm)
 
-    # ---- Event handlers ----
+    # ---- Events ----
 
-    def wheelEvent(self, event: QWheelEvent) -> None:
-        if self._original_pixmap is None:
-            return
-        delta = event.angleDelta().y()
-        if delta > 0:
-            new_zoom = min(self._zoom_factor * 1.15, self._max_zoom)
-        else:
-            new_zoom = max(self._zoom_factor / 1.15, self._min_zoom)
-        self._apply_zoom(new_zoom)
-        event.accept()
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self._original_pixmap:
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
             self._drag_active = True
             self._pan_start = event.position().toPoint()
-            self.setCursor(Qt.CursorStyle.ClosedHandCursor)
-            event.accept()
-        else:
-            super().mousePressEvent(event)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._drag_active and self._pan_start:
-            delta = event.position().toPoint() - self._pan_start
-            new_offset = self._pan_offset + delta
-            self._pan_start = event.position().toPoint()
-            self._apply_pan(new_offset)
-            event.accept()
-        else:
-            super().mouseMoveEvent(event)
+    def mouseMoveEvent(self, event) -> None:
+        if not self._drag_active or self._pan_start is None:
+            return
+        delta = event.position().toPoint() - self._pan_start
+        self._pan_start = event.position().toPoint()
+        new_offset = self._pan_offset + delta
+        self._apply_pan(new_offset)
 
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self._drag_active:
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
             self._drag_active = False
-            self.setCursor(Qt.CursorStyle.ArrowCursor)
-            event.accept()
-        else:
-            super().mouseReleaseEvent(event)
+            self._pan_start = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
 
-    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        if self._original_pixmap:
-            self.reset_view(emit=True)
-        event.accept()
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.reset_view()
+
+    def wheelEvent(self, event) -> None:
+        delta = event.angleDelta().y()
+        factor = 1.15 if delta > 0 else 1.0 / 1.15
+        self._apply_zoom(self._zoom_factor * factor)
 
 
 class ImagePanel(QWidget):
-    """One side of the comparison view (image + filename label)."""
+    """Single image panel with title, image, and optional label."""
 
-    def __init__(self, title: str = "", parent: QWidget | None = None):
+    def __init__(self, title: str, parent: QWidget | None = None):
         super().__init__(parent)
         self._dark: bool = True
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
 
         self._title = QLabel(title)
-        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._title.setStyleSheet(_TITLE_STYLE_DARK)
+        self._title.setStyleSheet(_TITLE_DARK)
 
-        self._notice = QLabel("")
-        self._notice.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._notice.setStyleSheet("color: #f39c12; font-size: 12px;")
+        self.image_label = ZoomableImageLabel(self)
 
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setStyleSheet(_SCROLL_DARK)
-        self._image_label = ZoomableImageLabel()
-        self._scroll.setWidget(self._image_label)
+        self._label = QLabel("")
+        self._label.setStyleSheet(_LABEL_DARK)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         layout.addWidget(self._title)
-        layout.addWidget(self._notice)
-        layout.addWidget(self._scroll, 1)
+        layout.addWidget(self.image_label, 1)
+        layout.addWidget(self._label)
 
     def update_theme(self, dark: bool) -> None:
         self._dark = dark
-        self._title.setStyleSheet(_TITLE_STYLE_DARK if dark else _TITLE_STYLE_LIGHT)
-        self._scroll.setStyleSheet(_SCROLL_DARK if dark else _SCROLL_LIGHT)
-        self._image_label.update_theme(dark)
-
-    @property
-    def image_label(self) -> ZoomableImageLabel:
-        return self._image_label
+        self._title.setStyleSheet(_TITLE_DARK if dark else _TITLE_LIGHT)
+        self._label.setStyleSheet(_LABEL_DARK if dark else _LABEL_LIGHT)
+        self.image_label.update_theme(dark)
 
     def show_image(
-        self, image: np.ndarray, filename: str, notice: str = ""
+        self,
+        image: np.ndarray,
+        filename: str,
+        label: str = "",
     ) -> None:
-        self._title.setText(filename)
-        if notice:
-            self._notice.setText(notice)
-        else:
-            self._notice.clear()
-        self._image_label.set_image(image)
+        self.image_label.set_image(image)
+        self._title.setText(f"{self._title.text().split(':')[0]}: {filename}")
+        self._label.setText(label)
 
     def clear(self) -> None:
-        self._title.setText("")
-        self._notice.clear()
-        self._image_label.clear_image()
+        self.image_label.clear_image()
+        self._label.setText("")
 
+
+# ---- Comparison View ----
 
 class ComparisonViewWidget(QWidget):
-    """Bottom comparison view with lock-sync support."""
+    """Side-by-side GT vs Prediction image comparison."""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._dark: bool = True
+        self._syncing: bool = False
+        self._sync_locked: bool = False
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
-        # Sync toggle button
-        self._sync_btn = QPushButton("🔓 锁定同步")
+        # Sync controls
+        ctrl_layout = QHBoxLayout()
+        ctrl_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._sync_btn = QPushButton("🔓 Lock Sync")
         self._sync_btn.setCheckable(True)
-        self._sync_btn.setFixedHeight(28)
         self._sync_btn.setStyleSheet(_BTN_DARK)
-        self._sync_btn.toggled.connect(self._on_sync_toggled)
+        self._sync_btn.clicked.connect(self._on_sync_toggled)
+        ctrl_layout.addWidget(self._sync_btn)
+        ctrl_layout.addStretch()
+        layout.addLayout(ctrl_layout)
 
-        # Image panels
+        # Panels
         panels_layout = QHBoxLayout()
         panels_layout.setContentsMargins(0, 0, 0, 0)
+        panels_layout.setSpacing(0)
 
+        # No visible separator border per request.md
         self._gt_panel = ImagePanel("Ground Truth")
         self._pred_panel = ImagePanel("Prediction")
 
-        self._sep = QFrame()
-        self._sep.setFrameShape(QFrame.Shape.VLine)
-        self._sep.setStyleSheet(_SEP_DARK)
-
         panels_layout.addWidget(self._gt_panel, 1)
-        panels_layout.addWidget(self._sep)
         panels_layout.addWidget(self._pred_panel, 1)
+        layout.addLayout(panels_layout, 1)
 
-        # No-data label
+        # No-data overlay
         self._no_data_label = QLabel("No Ground Truth Dataset Found")
         self._no_data_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._no_data_label.setStyleSheet(_NO_DATA_DARK)
-
-        layout.addWidget(self._sync_btn)
-        layout.addLayout(panels_layout, 1)
-
-        self._no_data_label.setParent(self)
         self._no_data_label.setVisible(False)
 
-        # Sync state
-        self._sync_locked: bool = False
-        self._syncing: bool = False
-
-        # Wire signals
+        # Connect sync signals
         self._gt_panel.image_label.zoom_changed.connect(self._on_gt_zoom)
         self._gt_panel.image_label.pan_changed.connect(self._on_gt_pan)
         self._pred_panel.image_label.zoom_changed.connect(self._on_pred_zoom)
         self._pred_panel.image_label.pan_changed.connect(self._on_pred_pan)
 
     def update_theme(self, dark: bool) -> None:
-        """Propagate theme to all children."""
         self._dark = dark
         self._sync_btn.setStyleSheet(_BTN_DARK if dark else _BTN_LIGHT)
-        self._sep.setStyleSheet(_SEP_DARK if dark else _SEP_LIGHT)
-        self._no_data_label.setStyleSheet(_NO_DATA_DARK if dark else _NO_DATA_LIGHT)
+        self._no_data_label.setStyleSheet(
+            _NO_DATA_DARK if dark else _NO_DATA_LIGHT
+        )
         self._gt_panel.update_theme(dark)
         self._pred_panel.update_theme(dark)
 
@@ -320,13 +305,13 @@ class ComparisonViewWidget(QWidget):
     def _on_sync_toggled(self, checked: bool) -> None:
         self._sync_locked = checked
         if checked:
-            self._sync_btn.setText("🔒 同步已锁定")
+            self._sync_btn.setText("🔒 Sync Locked")
             if not self._gt_panel.image_label.is_default_state():
                 self._gt_panel.image_label.reset_view(emit=False)
             if not self._pred_panel.image_label.is_default_state():
                 self._pred_panel.image_label.reset_view(emit=False)
         else:
-            self._sync_btn.setText("🔓 锁定同步")
+            self._sync_btn.setText("🔓 Lock Sync")
 
     def _on_gt_zoom(self, factor: float) -> None:
         if self._sync_locked and not self._syncing:
@@ -355,65 +340,61 @@ class ComparisonViewWidget(QWidget):
     # ---- Public API ----
 
     def show_pair(self, pair: ImagePair) -> None:
+        """Show a GT/Prediction pair.
+
+        When prediction is missing, silently fall back to showing GT on both sides.
+        """
         self._no_data_label.setVisible(False)
         self._gt_panel.setVisible(True)
-        self._sep.setVisible(True)
         self._pred_panel.setVisible(True)
         self._sync_btn.setVisible(True)
 
         gt_img = load_image(pair.gt_path) if pair.gt_path else None
         if gt_img is not None:
-            self._gt_panel.show_image(gt_img, pair.filename)
+            self._gt_panel.show_image(gt_img, pair.filename, label="Ground Truth")
         else:
             self._gt_panel.clear()
-            self._gt_panel._title.setText(pair.filename)
-            self._gt_panel._notice.setText("Load Error")
 
         if pair.pred_path and not pair.pred_missing:
             pred_img = load_image(pair.pred_path)
             if pred_img is not None:
-                self._pred_panel.show_image(pred_img, pair.filename)
+                self._pred_panel.show_image(pred_img, pair.filename, label="Prediction")
             else:
-                self._pred_panel.clear()
-                self._pred_panel._title.setText(pair.filename)
-                self._pred_panel._notice.setText("Load Error")
+                # Prediction image failed to load, show GT fallback
+                if gt_img is not None:
+                    self._pred_panel.show_image(
+                        gt_img, pair.filename, label="(GT fallback)"
+                    )
+                else:
+                    self._pred_panel.clear()
         else:
-            gt_img_fallback = load_image(pair.gt_path) if pair.gt_path else None
-            if gt_img_fallback is not None:
+            # No prediction available: silently show GT on both sides
+            if gt_img is not None:
                 self._pred_panel.show_image(
-                    gt_img_fallback,
-                    pair.filename,
-                    notice="Prediction Missing\nShowing Ground Truth Only",
+                    gt_img, pair.filename, label="(GT fallback)"
                 )
             else:
                 self._pred_panel.clear()
-                self._pred_panel._title.setText(pair.filename)
-                self._pred_panel._notice.setText("Prediction Missing")
 
     def show_fallback(self, pair: ImagePair) -> None:
+        """Fallback mode: show GT on both sides."""
         self._no_data_label.setVisible(False)
         self._gt_panel.setVisible(True)
-        self._sep.setVisible(True)
         self._pred_panel.setVisible(True)
         self._sync_btn.setVisible(True)
 
         gt_img = load_image(pair.gt_path) if pair.gt_path else None
         if gt_img is not None:
-            self._gt_panel.show_image(gt_img, pair.filename)
+            self._gt_panel.show_image(gt_img, pair.filename, label="Ground Truth")
             self._pred_panel.show_image(
-                gt_img,
-                pair.filename,
-                notice="No Training Result Available\nShowing Ground Truth Only",
+                gt_img, pair.filename, label="(GT fallback)"
             )
         else:
             self._gt_panel.clear()
             self._pred_panel.clear()
-            self._gt_panel._title.setText(pair.filename)
-            self._pred_panel._title.setText(pair.filename)
 
     def show_no_data(self) -> None:
         self._gt_panel.setVisible(False)
-        self._sep.setVisible(False)
         self._pred_panel.setVisible(False)
         self._sync_btn.setVisible(False)
         self._no_data_label.setVisible(True)

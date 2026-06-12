@@ -98,20 +98,38 @@ class MainController(QObject):
         )
 
     def _load_overlay_data(self) -> None:
-        """Load overlay datasets from DLPFC metadata/CSV files."""
+        """Load overlay datasets from DLPFC metadata/CSV files.
+
+        When prediction results exist, compare GT vs Pred.
+        When no prediction, fall back to self-comparison (GT vs GT = all correct).
+        """
         if not DATA_ROOT.exists():
             logger.warning("Data root not found: %s", DATA_ROOT)
             return
 
+        # Check if prediction result data is available
+        has_pred_results = PRED_DIR.exists() and any(PRED_DIR.iterdir())
+
+        if has_pred_results:
+            gt_col = "layer_guess"
+            pred_col = "GraphBased"
+            self._window.status_bar_widget.result_status.set_status("Loaded")
+            logger.info("Prediction results found, comparing %s vs %s", gt_col, pred_col)
+        else:
+            # No prediction: self-comparison, all points correct
+            gt_col = "layer_guess"
+            pred_col = "layer_guess"
+            self._window.status_bar_widget.result_status.set_status("Missing (GT fallback)")
+            logger.info("No prediction results, self-comparison: all correct")
+
         self._overlay_datasets = load_all_overlay_datasets(
             DATA_ROOT, SECTION_IDS,
-            gt_column="layer_guess",
-            pred_column="GraphBased",
+            gt_column=gt_col,
+            pred_column=pred_col,
         )
 
         if self._overlay_datasets:
             self._window.status_bar_widget.gt_status.set_status("Loaded")
-            self._window.status_bar_widget.result_status.set_status("Loaded")
             self._window.set_overlay_datasets(self._overlay_datasets)
             logger.info(
                 "Overlay data loaded: %d sections", len(self._overlay_datasets)
