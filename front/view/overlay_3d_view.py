@@ -44,6 +44,12 @@ _ACRYLIC = dict(opacity=0.30, pbr=True, metallic=0.02, roughness=0.15,
 _POINT_SIZE = 16
 _ERROR_POINT_SIZE = 22
 
+# Background and acrylic panel colors per theme
+_BG_DARK = "#101113"
+_BG_LIGHT = "#e4e4e8"
+_ACRYLIC_DARK = "#a8aeb6"   # lighter than dark bg
+_ACRYLIC_LIGHT = "#f0f0f4"  # lighter than light bg
+
 
 def _rgb(h: str) -> tuple:
     h = h.lstrip("#"); return tuple(int(h[i:i+2],16)/255.0 for i in (0,2,4))
@@ -147,7 +153,7 @@ class Overlay3DViewWidget(QWidget):
         self._plotter = QtInteractor(self)
         self._plotter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._plotter.enable_anti_aliasing()
-        self._plotter.set_background("#e4e4e8")  # overridden by update_theme
+        self._plotter.set_background(_BG_LIGHT)  # overridden by update_theme
         self._plotter.hide_axes()
         self._plotter.enable_trackball_style()
         layout.addWidget(self._plotter, 1)
@@ -176,8 +182,22 @@ class Overlay3DViewWidget(QWidget):
         self._build_scene(ds)
 
     def update_theme(self, dark):
-        self._plotter.set_background("#e4e4e8" if not dark else "#101113")
+        self._plotter.set_background(_BG_LIGHT if not dark else _BG_DARK)
         self._dark = dark
+        # Fix rounded corner artifacts: set Qt widget background to match pyvista bg
+        self._plotter.setStyleSheet(
+            "background-color: " + (_BG_DARK if dark else _BG_LIGHT) + ";"
+        )
+        # Update acrylic panel color if scene is built
+        if hasattr(self, "_plotter") and self._dataset is not None:
+            try:
+                panel = self._plotter.actors.get("acrylic_panel")
+                if panel is not None:
+                    col = _rgb(_ACRYLIC_DARK if dark else _ACRYLIC_LIGHT)
+                    panel.GetProperty().SetColor(*col)
+                    self._plotter.render()
+            except Exception:
+                pass
         if hasattr(self, "_float") and self._float.isVisible():
             self._float.update_theme(dark)
 
@@ -214,7 +234,8 @@ class Overlay3DViewWidget(QWidget):
 
         # ---- Acrylic panel ----
         box = pv.Cube(center=(0,0,0), x_length=pw, y_length=ph, z_length=thickness)
-        p.add_mesh(box, color="#a8aeb6", name="acrylic_panel",
+        panel_color = _ACRYLIC_DARK if getattr(self, "_dark", True) else _ACRYLIC_LIGHT
+        p.add_mesh(box, color=panel_color, name="acrylic_panel",
                    opacity=0.35, pbr=True, metallic=0.03, roughness=0.20,
                    specular=0.95, specular_power=120, ambient=0.10,
                    diffuse=0.5, smooth_shading=True)

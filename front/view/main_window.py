@@ -125,6 +125,24 @@ _THM_L = (
 _CONT_D = "background-color: #171717;"
 _CONT_L = "background-color: #fafafa;"
 
+_TITLE_D = (
+    "font-size: 18px; font-weight: 700; color: #f5f5f7; padding: 0;"
+)
+_TITLE_L = (
+    "font-size: 18px; font-weight: 700; color: #2e2e2e; padding: 0;"
+)
+_SUBTITLE_D = "font-size: 11px; color: #8a8a90; padding: 2px 0 0 0;"
+_SUBTITLE_L = "font-size: 11px; color: #999; padding: 2px 0 0 0;"
+_DS_D = (
+    "font-size: 11px; color: #b0b0b5; padding: 4px 10px;"
+    " border: 1px solid rgba(255,255,255,0.08); border-radius: 4px;"
+    " background: rgba(255,255,255,0.04);"
+)
+_DS_L = (
+    "font-size: 11px; color: #666; padding: 4px 10px;"
+    " border: 1px solid #ddd; border-radius: 4px; background: #fafafa;"
+)
+
 
 def apply_theme(dark: bool):
     app = QApplication.instance()
@@ -241,23 +259,16 @@ class MainWindow(QMainWindow):
 
         # Title area
         title_row = QHBoxLayout()
-        title_l = QLabel("Clustering Comparison")
-        title_l.setStyleSheet(
-            "font-size: 18px; font-weight: 700; color: #2e2e2e; padding: 0;"
-        )
-        subtitle_l = QLabel("Compare ground truth vs prediction results")
-        subtitle_l.setStyleSheet(
-            "font-size: 11px; color: #999; padding: 2px 0 0 0;"
-        )
+        self._title_label = QLabel("Clustering Comparison")
+        self._title_label.setStyleSheet(_TITLE_L)
+        self._subtitle_label = QLabel("Compare ground truth vs prediction results")
+        self._subtitle_label.setStyleSheet(_SUBTITLE_L)
         tv = QVBoxLayout()
-        tv.addWidget(title_l); tv.addWidget(subtitle_l)
+        tv.addWidget(self._title_label); tv.addWidget(self._subtitle_label)
         title_row.addLayout(tv, 1)
-        ds_label = QLabel("DLPFC")
-        ds_label.setStyleSheet(
-            "font-size: 11px; color: #666; padding: 4px 10px;"
-            " border: 1px solid #ddd; border-radius: 4px; background: #fafafa;"
-        )
-        title_row.addWidget(ds_label)
+        self._ds_label = QLabel("DLPFC")
+        self._ds_label.setStyleSheet(_DS_L)
+        title_row.addWidget(self._ds_label)
         cl.addLayout(title_row)
         cl.addSpacing(4)
 
@@ -289,6 +300,7 @@ class MainWindow(QMainWindow):
 
         # Apply initial theme
         apply_theme(False)
+        self._apply_widget_theme(False)
 
     # ================================================================
     #  Theme
@@ -297,8 +309,20 @@ class MainWindow(QMainWindow):
     def _toggle_theme(self):
         self._dark_theme = not self._dark_theme
         d = self._dark_theme
+        self._apply_theme_full(d)
+
+    def _apply_theme_full(self, d: bool):
+        """Apply both palette and widget-level stylesheets for the given theme."""
         apply_theme(d)
         self._theme_btn.setText((chr(0x263E)+"  Dark") if d else (chr(0x2600)+"  Light"))
+
+        self._apply_widget_theme(d)
+
+    def _apply_widget_theme(self, d: bool):
+        """Update widget-level stylesheets for the given theme (d=True for dark)."""
+        self._title_label.setStyleSheet(_TITLE_D if d else _TITLE_L)
+        self._subtitle_label.setStyleSheet(_SUBTITLE_D if d else _SUBTITLE_L)
+        self._ds_label.setStyleSheet(_DS_D if d else _DS_L)
 
         self._sidebar.setStyleSheet(_SB_DARK if d else _SB_LIGHT)
         ls = _LBL_D if d else _LBL_L
