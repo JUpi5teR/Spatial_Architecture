@@ -1,8 +1,4 @@
-"""Overlay cell data: GT vs Prediction error analysis.
-
-Reads structured data from `metadata.tsv` and `tissue_positions_list.csv`
-in each section folder, plus the hires scale factor for pixel -> image mapping.
-"""
+'''Overlay cell data: GT vs Prediction error analysis.'''
 from __future__ import annotations
 
 import json
@@ -17,55 +13,48 @@ import pandas as pd
 from utils.logger import logger
 
 
-# ====================================================================
-#  Error types and visual encoding
-# ====================================================================
-
 class ErrorType(str, Enum):
     CORRECT = "Correct"
-    MISCLASSIFIED = "Misclassified"   # GT != Pred, both present
-    NEW = "New"                       # Pred has, GT doesn't
-    MISSING = "Missing"               # GT has, Pred doesn't
+    MISCLASSIFIED = "Misclassified"
+    NEW = "New"
+    MISSING = "Missing"
 
 
-ERROR_COLORS: dict[ErrorType, str] = {
-    ErrorType.CORRECT: "#69b1ff",        # light blue (match)
-    ErrorType.MISCLASSIFIED: "#ff4d4f",  # high-saturation red
-    ErrorType.NEW: "#faad14",            # high-saturation yellow
-    ErrorType.MISSING: "#ff7a45",        # high-saturation orange
+# Layer color palette - blue family with adjacent hues, no near-white
+_LAYER_COLORS = {
+    "Layer1": "#5DADE2",
+    "Layer2": "#2E86C1",
+    "Layer3": "#2874A6",
+    "Layer4": "#1F618D",
+    "Layer5": "#1A5276",
+    "Layer6": "#154360",
+    "WM":     "#5D6D7E",
 }
 
-ERROR_SHAPES: dict[ErrorType, str] = {
-    ErrorType.CORRECT: "o",
-    ErrorType.MISCLASSIFIED: "D",
-    ErrorType.NEW: "^",
-    ErrorType.MISSING: "v",
-}
+_FALLBACK_COLORS = [
+    "#008B8B", "#008080", "#0E6655", "#1E90FF",
+    "#7B68EE", "#6A5ACD", "#483D8B", "#4B0082",
+    "#8E44AD", "#1ABC9C", "#117A65", "#191970",
+]
 
-ERROR_ALPHA: dict[ErrorType, float] = {
-    ErrorType.CORRECT: 0.40,
-    ErrorType.MISCLASSIFIED: 1.00,
-    ErrorType.NEW: 1.00,
-    ErrorType.MISSING: 1.00,
-}
-
-ERROR_SIZE: dict[ErrorType, int] = {
-    ErrorType.CORRECT: 6,
-    ErrorType.MISCLASSIFIED: 16,
-    ErrorType.NEW: 14,
-    ErrorType.MISSING: 14,
-}
+ERROR_RED_BRIGHT = "#FF0000"
+ERROR_ORANGE_RED = "#FF4500"
 
 
-# ====================================================================
-#  Data classes
-# ====================================================================
+def get_layer_color(layer_name: str) -> str:
+    if layer_name in _LAYER_COLORS:
+        return _LAYER_COLORS[layer_name]
+    if not layer_name or layer_name == "Unknown":
+        return "#BDBDBD"
+    h = sum(ord(c) for c in layer_name) % len(_FALLBACK_COLORS)
+    return _FALLBACK_COLORS[h]
+
 
 @dataclass
 class OverlayCellData:
     cell_id: str
-    x: float                  # panel-space x (after mapping hires -> panel)
-    y: float                  # panel-space y
+    x: float
+    y: float
     ground_truth: str
     prediction: str
     error_type: ErrorType
@@ -75,7 +64,6 @@ class OverlayCellData:
 
 @dataclass
 class ClusterStat:
-    """Per-cluster statistics for summary tables."""
     gt_name: str
     gt_id: Optional[int]
     pred_name: str
@@ -83,27 +71,20 @@ class ClusterStat:
     n_true: int
     n_pred: int
     n_match: int
-    n_new: int           # in Pred but not in GT
+    n_new: int
     n_misclass: int
-    n_missing: int       # in GT but not in Pred
-    agreement: float     # 0..1
+    n_missing: int
+    agreement: float
 
 
 @dataclass
 class OverlayDataset:
     section_id: str
     cells: list[OverlayCellData] = field(default_factory=list)
-
-    # Image dimensions
-    hires_dim: float = 2000.0   # tissue_hires_image.png side length
+    hires_dim: float = 2000.0
     panel_w: float = 4.0
     panel_h: float = 3.0
-
-    # Status
     has_pred: bool = False
-    image_path: Optional[Path] = None  # hires image (for background reference)
-
-    # Aggregates
     cell_count: int = 0
     error_count: int = 0
     error_rate: float = 0.0
@@ -115,10 +96,6 @@ class OverlayDataset:
     def cells_by_type(self, etype: ErrorType) -> list[OverlayCellData]:
         return [c for c in self.cells if c.error_type == etype]
 
-
-# ====================================================================
-#  Loaders
-# ====================================================================
 
 _HIRES_DEFAULT = 2000.0
 
@@ -137,184 +114,224 @@ def _read_scale(spatial_dir: Path) -> float:
 
 
 def _hires_dim(spatial_dir: Path) -> float:
-    """Infer the hires image side length from PNG shape if possible."""
     img_path = spatial_dir / "tissue_hires_image.png"
     if img_path.exists():
         try:
             import cv2
             im = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
             if im is not None:
-                # Use the max side as the reference square dimension
                 return float(max(im.shape[0], im.shape[1]))
         except Exception:
             pass
     return _HIRES_DEFAULT
 
 
+def _read_positions(pos_path: Path) -> dict[str, tuple[float, float]]:
+    positions: dict[str, tuple[float, float]] = {}
+    try:
+        df = pd.read_csv(pos_path, header=None, dtype=str)
+        for _, row in df.iterrows():
+            in_tissue = str(row[1]).strip()
+            if in_tissue != "1":
+                continue
+            barcode = str(row[0]).strip()
+            px_row = float(row[4])
+            px_col = float(row[5])
+            positions[barcode] = (px_row, px_col)
+    except Exception as exc:
+        logger.error("Failed to read positions from %s: %s", pos_path, exc)
+    return positions
+
+
+def _load_results_labels(result_root: Path, section_id: str) -> dict[str, str]:
+    result_dir = result_root / section_id
+    if not result_dir.exists() or not result_dir.is_dir():
+        return {}
+    data_files = list(result_dir.glob("*.csv")) + list(result_dir.glob("*.tsv"))
+    if not data_files:
+        return {}
+    data_path = data_files[0]
+    logger.info("Loading results from %s", data_path)
+    try:
+        if data_path.suffix == ".csv":
+            df = pd.read_csv(data_path, dtype=str)
+        else:
+            df = pd.read_csv(data_path, sep="\t", dtype=str)
+        barcode_col = None
+        label_col = None
+        for col in df.columns:
+            cl = col.strip().lower()
+            if cl in ("barcode", "cell_id", "cell", "spot"):
+                barcode_col = col
+            elif cl in ("prediction", "label", "cluster", "graphbased", "pred", "pred_label", "predict"):
+                label_col = col
+        if barcode_col is None:
+            barcode_col = df.columns[0]
+        if label_col is None:
+            candidates = [c for c in df.columns if c != barcode_col]
+            label_col = candidates[-1] if candidates else df.columns[-1]
+        result: dict[str, str] = {}
+        for _, row in df.iterrows():
+            b = str(row[barcode_col]).strip()
+            l = str(row[label_col]).strip()
+            if b and b.lower() != "nan" and l and l.lower() != "nan":
+                result[b] = l
+        logger.info("Loaded %d result labels for %s", len(result), section_id)
+        return result
+    except Exception as exc:
+        logger.warning("Failed to load results for %s: %s", section_id, exc)
+        return {}
+
+
 def load_overlay_dataset(
     data_root: Path,
     section_id: str,
-    gt_column: str = "layer_guess",
+    gt_column: str = "layer_guess_reordered",
     pred_column: str = "GraphBased",
+    result_root: Optional[Path] = None,
     panel_w: float = 4.0,
     panel_h: float = 3.0,
 ) -> Optional[OverlayDataset]:
-    """Load overlay data for a single section.
+    sec_dir = data_root / section_id
+    meta_path = sec_dir / "metadata.tsv"
+    pos_path = sec_dir / "spatial" / "tissue_positions_list.csv"
 
-    Reads:
-        {data_root}/{section_id}/metadata.tsv
-        {data_root}/{section_id}/spatial/tissue_positions_list.csv
-        {data_root}/{section_id}/spatial/scalefactors_json.json
-    """
-    section_root = data_root / section_id
-    meta_path = section_root / "metadata.tsv"
-    spatial_dir = section_root / "spatial"
-    pos_path = spatial_dir / "tissue_positions_list.csv"
-
-    if not meta_path.exists() or not pos_path.exists():
-        logger.warning("Missing files for section %s", section_id)
+    if not meta_path.exists():
+        logger.warning("Metadata not found: %s", meta_path)
+        return None
+    if not pos_path.exists():
+        logger.warning("Positions not found: %s", pos_path)
         return None
 
     try:
-        meta = pd.read_csv(meta_path, sep="\t")
+        meta_df = pd.read_csv(meta_path, sep="\t", dtype=str)
     except Exception as exc:
-        logger.error("Failed to read %s: %s", meta_path, exc)
+        logger.error("Failed to read metadata: %s", exc)
         return None
 
-    try:
-        pos = pd.read_csv(
-            pos_path,
-            header=None,
-            names=["barcode", "in_tissue", "array_row", "array_col", "pxl_col", "pxl_row"],
-        )
-        pos = pos[pos["in_tissue"] == 1]
-    except Exception as exc:
-        logger.error("Failed to read %s: %s", pos_path, exc)
-        return None
+    gt_map: dict[str, str] = {}
+    internal_pred_map: dict[str, str] = {}
+    has_internal_pred = pred_column in meta_df.columns
 
-    if gt_column not in meta.columns:
-        logger.warning("GT column %s not in metadata for %s", gt_column, section_id)
-        return None
+    for _, row in meta_df.iterrows():
+        barcode = str(row.get("barcode", "")).strip()
+        if not barcode or barcode.lower() == "nan":
+            continue
+        gt_val = str(row.get(gt_column, "")).strip()
+        if gt_val and gt_val.lower() != "nan":
+            gt_map[barcode] = gt_val
+        if has_internal_pred:
+            p_val = str(row.get(pred_column, "")).strip()
+            if p_val and p_val.lower() != "nan":
+                internal_pred_map[barcode] = p_val
 
-    has_pred = pred_column in meta.columns
-    hires_scalef = _read_scale(spatial_dir)
-    hires_dim = _hires_dim(spatial_dir)
+    external_pred_map: dict[str, str] = {}
+    has_results = False
+    if result_root is not None and result_root.exists():
+        external_pred_map = _load_results_labels(result_root, section_id)
+        has_results = len(external_pred_map) > 0
 
-    df = meta.merge(pos[["barcode", "pxl_col", "pxl_row"]], on="barcode", how="inner")
-    df = df.dropna(subset=[gt_column])
+    if has_results:
+        pred_map = external_pred_map
+        has_pred = True
+    elif has_internal_pred:
+        pred_map = internal_pred_map
+        has_pred = True
+    else:
+        pred_map = {}
+        has_pred = False
 
-    # To panel coordinates (panel is panel_w x panel_h, centered at origin)
-    df["panel_x"] = (df["pxl_col"] * hires_scalef / hires_dim - 0.5) * panel_w
-    df["panel_y"] = (df["pxl_row"] * hires_scalef / hires_dim - 0.5) * panel_h
+    pos_meta = _read_positions(pos_path)
+    hires = _hires_dim(sec_dir / "spatial")
+    scale = _read_scale(sec_dir / "spatial")
 
     cells: list[OverlayCellData] = []
-    gt_set: set[str] = set()
-    pred_set: set[str] = set()
+    for barcode, (px_row, px_col) in pos_meta.items():
+        hx = float(px_col) * scale
+        hy = float(px_row) * scale
+        x = (hx / hires) * panel_w - panel_w / 2
+        y = panel_h / 2 - (hy / hires) * panel_h
 
-    for _, row in df.iterrows():
-        gt_val = row[gt_column]
-        gt_str = str(gt_val).strip()
-        gt_set.add(gt_str)
+        gt_label = gt_map.get(barcode, "")
+        pred_label = pred_map.get(barcode, "")
 
-        # Normalize GT to a numeric id for fair comparison
-        gt_id_norm = _normalize_to_id(gt_val)
+        # Skip impurity points: empty or NA ground truth
+        if not gt_label or gt_label.upper() == "NA":
+            continue
 
-        if has_pred and pd.notna(row[pred_column]):
-            try:
-                pred_id = int(row[pred_column])
-            except (ValueError, TypeError):
-                pred_id = -1
-            pred_str = f"Cluster{pred_id}"
+        gt_id = _normalize_to_id(gt_label)
+        pred_id = _normalize_to_id(pred_label)
+
+        if not has_pred:
+            error_type = ErrorType.CORRECT
+        elif not pred_label:
+            error_type = ErrorType.MISSING if gt_label else ErrorType.CORRECT
+        elif not gt_label:
+            error_type = ErrorType.NEW
+        elif gt_id == pred_id:
+            error_type = ErrorType.CORRECT
         else:
-            pred_id = gt_id_norm
-            pred_str = gt_str  # fallback: treat as match
+            error_type = ErrorType.MISCLASSIFIED
 
-        pred_set.add(pred_str)
+        cells.append(OverlayCellData(
+            cell_id=barcode, x=x, y=y,
+            ground_truth=gt_label, prediction=pred_label,
+            error_type=error_type, gt_id=gt_id, pred_id=pred_id,
+        ))
 
-        # Compare on normalized id; both missing -> correct
-        if (gt_id_norm is not None and pred_id is not None
-                and gt_id_norm == pred_id):
-            etype = ErrorType.CORRECT
-        else:
-            etype = ErrorType.MISCLASSIFIED
+    if not cells:
+        logger.warning("No cells for section %s", section_id)
+        return None
 
-        # Extract a display id for the GT (Layer1->1, WM->0, etc.)
-        gt_id_val: Optional[int] = gt_id_norm
+    gt_names = set(c.ground_truth for c in cells if c.ground_truth)
+    pred_names = set(c.prediction for c in cells if c.prediction)
+    gt_names_sorted = _sort_cluster_names(gt_names)
+    pred_names_sorted = _sort_cluster_names(pred_names)
 
-        cells.append(
-            OverlayCellData(
-                cell_id=row["barcode"],
-                x=float(row["panel_x"]),
-                y=float(row["panel_y"]),
-                ground_truth=gt_str,
-                prediction=pred_str,
-                error_type=etype,
-                gt_id=gt_id_val,
-                pred_id=pred_id,
-            )
-        )
-
-    error_count = sum(1 for c in cells if c.error_type != ErrorType.CORRECT)
     cell_count = len(cells)
-    error_rate = (error_count / cell_count) if cell_count else 0.0
+    error_cells = [c for c in cells if c.error_type != ErrorType.CORRECT]
+    error_count = len(error_cells)
+    error_rate = error_count / cell_count if cell_count else 0.0
 
-    # Cluster stats (per GT cluster)
-    gt_names_sorted = _sort_cluster_names(gt_set)
-    pred_names_sorted = _sort_cluster_names(pred_set)
-    cluster_stats = _build_cluster_stats(cells, gt_names_sorted, pred_names_sorted)
     confusion = _build_confusion(cells)
+    cluster_stats = _build_cluster_stats(cells, gt_names_sorted, pred_names_sorted)
+
+    logger.info("Section %s: %d cells, %d errors, pred=%s", section_id, cell_count, error_count, has_pred)
 
     return OverlayDataset(
-        section_id=section_id,
-        cells=cells,
-        hires_dim=hires_dim,
-        panel_w=panel_w,
-        panel_h=panel_h,
-        has_pred=has_pred,
-        image_path=spatial_dir / "tissue_hires_image.png",
-        cell_count=cell_count,
-        error_count=error_count,
-        error_rate=error_rate,
-        gt_clusters=gt_names_sorted,
-        pred_clusters=pred_names_sorted,
-        cluster_stats=cluster_stats,
-        confusion=confusion,
+        section_id=section_id, cells=cells,
+        hires_dim=hires, panel_w=panel_w, panel_h=panel_h,
+        has_pred=has_pred, cell_count=cell_count,
+        error_count=error_count, error_rate=error_rate,
+        gt_clusters=gt_names_sorted, pred_clusters=pred_names_sorted,
+        cluster_stats=cluster_stats, confusion=confusion,
     )
 
 
 def load_all_overlay_datasets(
     data_root: Path,
     section_ids: list[str],
-    gt_column: str = "layer_guess",
+    gt_column: str = "layer_guess_reordered",
     pred_column: str = "GraphBased",
+    result_root: Optional[Path] = None,
     panel_w: float = 4.0,
     panel_h: float = 3.0,
 ) -> list[OverlayDataset]:
     datasets: list[OverlayDataset] = []
     for sid in section_ids:
         ds = load_overlay_dataset(
-            data_root, sid, gt_column, pred_column, panel_w, panel_h
+            data_root, sid, gt_column, pred_column,
+            result_root=result_root,
+            panel_w=panel_w, panel_h=panel_h,
         )
         if ds is not None:
             datasets.append(ds)
         else:
-            logger.warning("Section %s skipped (no overlay data)", sid)
+            logger.warning("Section %s skipped", sid)
     return datasets
 
 
-# ====================================================================
-#  Helpers
-# ====================================================================
-
 def _normalize_to_id(val) -> Optional[int]:
-    """Normalize a GT/Pred cell label to a comparable integer id.
-
-    DLPFC GT uses:
-      - "Layer1".."Layer6" -> 1..6
-      - "WM" -> 0
-
-    Pred columns are usually integers (e.g. GraphBased -> 1..6).
-    """
     if val is None or (isinstance(val, float) and np.isnan(val)):
         return None
     if isinstance(val, (int, np.integer)):
@@ -334,7 +351,6 @@ def _normalize_to_id(val) -> Optional[int]:
             return int(s[7:])
         except ValueError:
             return None
-    # plain integer string
     try:
         return int(s)
     except ValueError:
@@ -342,7 +358,6 @@ def _normalize_to_id(val) -> Optional[int]:
 
 
 def _sort_cluster_names(names: set[str]) -> list[str]:
-    """Sort cluster names: Layer1, Layer2, ..., WM, ClusterN, others."""
     def key(name: str):
         if name.startswith("Layer"):
             try:
@@ -360,73 +375,43 @@ def _sort_cluster_names(names: set[str]) -> list[str]:
     return sorted(names, key=key)
 
 
-def _build_cluster_stats(
-    cells: list[OverlayCellData],
-    gt_names: list[str],
-    pred_names: list[str],
-) -> list[ClusterStat]:
-    by_gt: dict[str, list[OverlayCellData]] = {n: [] for n in gt_names}
+def _build_cluster_stats(cells, gt_names, pred_names):
+    by_gt = {n: [] for n in gt_names}
     for c in cells:
         by_gt.setdefault(c.ground_truth, []).append(c)
-
-    stats: list[ClusterStat] = []
+    stats = []
     for gt_name in gt_names:
         g_cells = by_gt[gt_name]
         n_true = len(g_cells)
-        # Pred name for the same cluster: use first non-empty pred from this gt
         preds_in_gt = [c.prediction for c in g_cells if c.prediction]
         if preds_in_gt:
             from collections import Counter
             pred_name = Counter(preds_in_gt).most_common(1)[0][0]
         else:
             pred_name = gt_name
-
         n_pred = sum(1 for c in cells if c.prediction == pred_name)
-        n_match = sum(
-            1 for c in g_cells
-            if c.error_type == ErrorType.CORRECT and c.prediction == pred_name
-        )
+        n_match = sum(1 for c in g_cells if c.error_type == ErrorType.CORRECT and c.prediction == pred_name)
         n_misclass = sum(1 for c in g_cells if c.error_type == ErrorType.MISCLASSIFIED)
         n_new = sum(1 for c in cells if c.prediction == pred_name and c.ground_truth != gt_name)
-        n_missing = sum(
-            1 for c in cells
-            if c.ground_truth == gt_name and c.prediction != pred_name
-        )
+        n_missing = sum(1 for c in cells if c.ground_truth == gt_name and c.prediction != pred_name)
         agreement = (n_match / n_true) if n_true else 0.0
-
-        try:
-            gt_id = g_cells[0].gt_id if g_cells else None
-        except Exception:
-            gt_id = None
-        try:
-            pred_id = None
-            for c in g_cells:
-                if c.prediction == pred_name and c.pred_id is not None:
-                    pred_id = c.pred_id
-                    break
-        except Exception:
-            pred_id = None
-
-        stats.append(
-            ClusterStat(
-                gt_name=gt_name,
-                gt_id=gt_id,
-                pred_name=pred_name,
-                pred_id=pred_id,
-                n_true=n_true,
-                n_pred=n_pred,
-                n_match=n_match,
-                n_new=n_new,
-                n_misclass=n_misclass,
-                n_missing=n_missing,
-                agreement=agreement,
-            )
-        )
+        gt_id = g_cells[0].gt_id if g_cells else None
+        pred_id = None
+        for c in g_cells:
+            if c.prediction == pred_name and c.pred_id is not None:
+                pred_id = c.pred_id
+                break
+        stats.append(ClusterStat(
+            gt_name=gt_name, gt_id=gt_id, pred_name=pred_name, pred_id=pred_id,
+            n_true=n_true, n_pred=n_pred, n_match=n_match,
+            n_new=n_new, n_misclass=n_misclass, n_missing=n_missing,
+            agreement=agreement,
+        ))
     return stats
 
 
-def _build_confusion(cells: list[OverlayCellData]) -> dict[tuple[str, str], int]:
-    conf: dict[tuple[str, str], int] = {}
+def _build_confusion(cells):
+    conf = {}
     for c in cells:
         key = (c.ground_truth, c.prediction)
         conf[key] = conf.get(key, 0) + 1

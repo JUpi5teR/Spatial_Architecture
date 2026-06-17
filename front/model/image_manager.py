@@ -95,8 +95,8 @@ def scan_images(
     has_any_pred = False
 
     for sid in section_ids:
-        gt_path = gt_dir / sid / f"{sid}_gt.png"
-        pred_path = pred_dir / sid / f"{sid}_pred.png"
+        gt_path = gt_dir / sid / f"{sid}_ground truth.png"
+        pred_path = pred_dir / sid / "predicted_domain.png"
 
         gt_exists = gt_path.exists() and gt_path.is_file()
         pred_exists = pred_path.exists() and pred_path.is_file()

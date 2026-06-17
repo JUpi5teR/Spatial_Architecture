@@ -443,7 +443,7 @@ class MainWindow(QMainWindow):
                 f"No prediction column found in metadata for {ds.section_id}. "
                 f"Showing GT only."
             )
-        self._view_3d.set_dataset(ds, gt_image_path=gt_path, pred_image_path=pred_path)
+        self._view_3d.set_dataset(ds)
         self._data_area.update_dataset(ds)
 
     def _show_image(self, idx: int) -> None:
