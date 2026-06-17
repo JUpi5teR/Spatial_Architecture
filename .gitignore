@@ -2,8 +2,18 @@
 front/.vscode/
 front/DLPFC_result/
 front/logs/
-front/model/
 front/result/
+front/model/__pycache__/
 
+# Python 编译缓存（全局）
+__pycache__/
+*.pyc
+*.pyo
+
+# 数据集与文档（不上传）
+DLPFC/
+ideal front-end image.png
+空间域识别任务介绍.docx
+opencode.txt
 reference/
 dataset/
