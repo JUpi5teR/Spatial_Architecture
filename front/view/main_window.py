@@ -1,454 +1,499 @@
-"""ClustroView - Clustering Comparison page.
+"""ClustroView main window.
 
-Layout: left fixed nav sidebar + right scrollable content.
-Single toggle: Side-by-Side / 3D Flip (per request.md).
+Layout (per ideal front-end image):
+    [ Sidebar |  Scrollable right panel  ]
+                  - Title row (Clustering Comparison + section selector)
+                  - Visualization area (acrylic 3D panel + floating controls)
+                  - Data area (5 tabs)
+
+Themes: light by default, dark toggleable via sidebar.
 """
+from __future__ import annotations
+
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
-    QApplication,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QMainWindow,
-    QPushButton,
-    QScrollArea,
-    QSlider,
-    QStatusBar,
-    QVBoxLayout,
-    QWidget,
-    QSizePolicy,
+    QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow,
+    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QStatusBar,
+    QVBoxLayout, QWidget,
 )
 
-from model.image_manager import ImageCollection
+from model.image_manager import ImageCollection, ImagePair
 from model.overlay_data import OverlayDataset
+from utils.logger import logger
 from view.comparison_view import ComparisonViewWidget
+from view.data_area import DataAreaWidget
 from view.overlay_3d_view import Overlay3DViewWidget
-from view.status_bar import ParamsWidget, StatusBarWidget
-from view.training_curve import TrainingCurveWidget
+from view.sidebar import Sidebar
 
 
 # ====================================================================
 #  Palette
 # ====================================================================
-
 _DARK = {
-    "Window": (23, 23, 23), "WindowText": (245, 245, 247),
-    "Base": (35, 35, 38), "AlternateBase": (30, 30, 33),
+    "Window": (18, 18, 20), "WindowText": (245, 245, 247),
+    "Base": (30, 30, 33), "AlternateBase": (24, 24, 26),
     "Text": (245, 245, 247), "Button": (40, 40, 44),
     "ButtonText": (245, 245, 247), "BrightText": (255, 77, 79),
     "Link": (100, 180, 255), "Highlight": (100, 180, 255),
-    "HighlightedText": (23, 23, 23),
+    "HighlightedText": (18, 18, 20),
 }
 
 _LIGHT = {
     "Window": (250, 250, 250), "WindowText": (46, 46, 46),
-    "Base": (245, 245, 245), "AlternateBase": (240, 240, 240),
-    "Text": (46, 46, 46), "Button": (235, 235, 235),
+    "Base": (255, 255, 255), "AlternateBase": (245, 245, 245),
+    "Text": (46, 46, 46), "Button": (245, 245, 245),
     "ButtonText": (46, 46, 46), "BrightText": (255, 77, 79),
     "Link": (50, 130, 220), "Highlight": (50, 130, 220),
     "HighlightedText": (250, 250, 250),
 }
 
-# ====================================================================
-#  Glass sidebar
-# ====================================================================
 
-_SB_DARK = (
-    "QFrame { background: #1e1e21;"
-    " border-right: 1px solid rgba(255,255,255,0.06); }"
-)
-_SB_LIGHT = (
-    "QFrame { background: #f5f5f5;"
-    " border-right: 1px solid #e6e6e6; }"
-)
-
-_LBL_D = "color: #8a8a90; font-size: 9px; letter-spacing: 1px;"
-_LBL_L = "color: #8a8a8a; font-size: 9px; letter-spacing: 1px;"
-
-_SEP_D = "color: rgba(255,255,255,0.06); font-size: 8px;"
-_SEP_L = "color: rgba(0,0,0,0.08); font-size: 8px;"
-
-_CNT_D = "color: #8a8a90; font-size: 10px;"
-_CNT_L = "color: rgba(0,0,0,0.38); font-size: 10px;"
-
-# ---- Single mode toggle button ----
-_TOGGLE_D = (
-    "QPushButton { font-size: 10px; padding: 5px 0;"
-    " border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;"
-    " background: rgba(255,255,255,0.04); color: #8a8a90; }"
-    "QPushButton:hover { background: rgba(255,255,255,0.08); }"
-    "QPushButton:checked {"
-    " background: rgba(100,180,255,0.15); color: #f5f5f7;"
-    " border-color: rgba(100,180,255,0.30); font-weight: 600; }"
-)
-_TOGGLE_L = (
-    "QPushButton { font-size: 10px; padding: 5px 0;"
-    " border: 1px solid rgba(0,0,0,0.07); border-radius: 6px;"
-    " background: rgba(0,0,0,0.02); color: rgba(0,0,0,0.45); }"
-    "QPushButton:hover { background: rgba(0,0,0,0.05); }"
-    "QPushButton:checked {"
-    " background: rgba(50,130,220,0.15); color: #1a6bc0;"
-    " border-color: rgba(50,130,220,0.35); font-weight: 600; }"
-)
-
-_NAV_D = (
-    "QPushButton { font-size: 11px; min-width: 24px; max-width: 24px;"
-    " min-height: 20px; max-height: 20px;"
-    " border: 1px solid rgba(255,255,255,0.06); border-radius: 6px;"
-    " background: rgba(255,255,255,0.03); color: #8a8a90; }"
-    "QPushButton:hover { background: rgba(255,255,255,0.08); }"
-)
-_NAV_L = (
-    "QPushButton { font-size: 11px; min-width: 24px; max-width: 24px;"
-    " min-height: 20px; max-height: 20px;"
-    " border: 1px solid rgba(0,0,0,0.05); border-radius: 4px;"
-    " background: rgba(0,0,0,0.02); color: rgba(0,0,0,0.40); }"
-    "QPushButton:hover { background: rgba(0,0,0,0.05); }"
-)
-
-_THM_D = (
-    "QPushButton { font-size: 10px; padding: 4px 10px;"
-    " border: 1px solid rgba(255,255,255,0.06); border-radius: 8px;"
-    " background: rgba(255,255,255,0.03); color: #8a8a90; }"
-    "QPushButton:hover { background: rgba(255,255,255,0.08); }"
-)
-_THM_L = (
-    "QPushButton { font-size: 10px; padding: 3px 8px;"
-    " border: 1px solid rgba(0,0,0,0.05); border-radius: 5px;"
-    " background: rgba(0,0,0,0.02); color: rgba(0,0,0,0.38); }"
-    "QPushButton:hover { background: rgba(0,0,0,0.04); }"
-)
-
-_CONT_D = "background-color: #171717;"
-_CONT_L = "background-color: #fafafa;"
-
-_TITLE_D = (
-    "font-size: 18px; font-weight: 700; color: #f5f5f7; padding: 0;"
-)
-_TITLE_L = (
-    "font-size: 18px; font-weight: 700; color: #2e2e2e; padding: 0;"
-)
-_SUBTITLE_D = "font-size: 11px; color: #8a8a90; padding: 2px 0 0 0;"
-_SUBTITLE_L = "font-size: 11px; color: #999; padding: 2px 0 0 0;"
-_DS_D = (
-    "font-size: 11px; color: #b0b0b5; padding: 4px 10px;"
-    " border: 1px solid rgba(255,255,255,0.08); border-radius: 4px;"
-    " background: rgba(255,255,255,0.04);"
-)
-_DS_L = (
-    "font-size: 11px; color: #666; padding: 4px 10px;"
-    " border: 1px solid #ddd; border-radius: 4px; background: #fafafa;"
-)
-
-
-def apply_theme(dark: bool):
+def apply_theme(dark: bool) -> None:
     app = QApplication.instance()
-    if app is None: return
-    palette = QPalette()
+    if app is None:
+        return
+    pal = QPalette()
     src = _DARK if dark else _LIGHT
-    for role_name, rgb in src.items():
-        role = getattr(QPalette.ColorRole, role_name, None)
+    for name, rgb in src.items():
+        role = getattr(QPalette.ColorRole, name, None)
         if role is not None:
-            palette.setColor(role, QColor(*rgb))
-    app.setPalette(palette)
+            pal.setColor(role, QColor(*rgb))
+    app.setPalette(pal)
+
+
+# ====================================================================
+#  Styles for the right panel
+# ====================================================================
+_CONTENT_DARK = "background-color: #121214;"
+_CONTENT_LIGHT = "background-color: #ffffff;"
+
+_TITLE_LIGHT = "color: #1a1a1a; font-size: 24px; font-weight: 800;"
+_TITLE_DARK = "color: #f5f5f7; font-size: 24px; font-weight: 800;"
+
+_SUBTITLE_LIGHT = "color: #888; font-size: 12px;"
+_SUBTITLE_DARK = "color: #8a8a90; font-size: 12px;"
+
+_DROPDOWN_LIGHT = """
+QComboBox {
+    background: #ffffff; color: #1a1a1a;
+    border: 1px solid #e0e0e0; border-radius: 6px;
+    padding: 6px 12px; font-size: 12px;
+    min-height: 22px;
+}
+QComboBox:hover { border-color: #b9d2f1; }
+QComboBox::drop-down { border: none; width: 18px; }
+QComboBox QAbstractItemView {
+    background: #ffffff; color: #1a1a1a;
+    border: 1px solid #e0e0e0; selection-background-color: #e3eefb;
+    selection-color: #1a6bc0;
+    padding: 4px;
+}
+"""
+
+_DROPDOWN_DARK = """
+QComboBox {
+    background: #1e1e21; color: #f5f5f7;
+    border: 1px solid #2a2a2e; border-radius: 6px;
+    padding: 6px 12px; font-size: 12px;
+    min-height: 22px;
+}
+QComboBox:hover { border-color: rgba(100,180,255,0.5); }
+QComboBox::drop-down { border: none; width: 18px; }
+QComboBox QAbstractItemView {
+    background: #1e1e21; color: #f5f5f7;
+    border: 1px solid #2a2a2e; selection-background-color: rgba(100,180,255,0.25);
+    padding: 4px;
+}
+"""
+
+_MODE_BTN_LIGHT = """
+QPushButton {
+    font-size: 11px; padding: 5px 10px; border: 1px solid #e0e0e0;
+    border-radius: 5px; background: #ffffff; color: #555;
+}
+QPushButton:hover { background: #eef3fb; border-color: #b9d2f1; color: #1a6bc0; }
+QPushButton:checked {
+    background: #e3eefb; border-color: #5b8fd9; color: #1a6bc0; font-weight: 600;
+}
+"""
+
+_MODE_BTN_DARK = """
+QPushButton {
+    font-size: 11px; padding: 5px 10px; border: 1px solid #2a2a2e;
+    border-radius: 5px; background: #1e1e21; color: #c0c0c5;
+}
+QPushButton:hover { background: rgba(100,180,255,0.10); color: #f5f5f7; }
+QPushButton:checked {
+    background: rgba(100,180,255,0.20); border-color: rgba(100,180,255,0.40);
+    color: #f5f5f7; font-weight: 600;
+}
+"""
+
+_NOTICE_LIGHT = """
+QFrame#notice {
+    background: #fff7e6; border: 1px solid #ffe7ba;
+    border-radius: 6px;
+}
+QLabel#noticeText { color: #ad6800; font-size: 11px; }
+"""
+
+_NOTICE_DARK = """
+QFrame#notice {
+    background: rgba(245, 154, 35, 0.12); border: 1px solid rgba(245, 154, 35, 0.4);
+    border-radius: 6px;
+}
+QLabel#noticeText { color: #f5b04a; font-size: 11px; }
+"""
 
 
 # ====================================================================
 #  Main window
 # ====================================================================
-
 class MainWindow(QMainWindow):
-    SIDEBAR_W = 220
-
     def __init__(self, controller=None):
         super().__init__()
         self._controller = controller
         self._collection: Optional[ImageCollection] = None
         self._overlay_datasets: list[OverlayDataset] = []
-        self._current_index = 0
-        self._dark_theme = False  # default light per request.md
-        self._is_3dflip_mode = False
+        self._current_index: int = 0
+        self._dark_theme: bool = False
+        self._is_3dflip_mode: bool = True  # default per spec
 
         self.setWindowTitle("ClustroView - Clustering Comparison")
-        self.setMinimumSize(1050, 650)
-        self._setup_ui()
+        self.setMinimumSize(1180, 760)
 
-        self._lazy = QTimer(self); self._lazy.setSingleShot(True)
-        self._lazy.setInterval(100)
+        # Cache for image paths of the current section
+        self._gt_image_path: Optional[str] = None
+        self._pred_image_path: Optional[str] = None
+
+        # Lazy-loading debounce
+        self._lazy = QTimer(self)
+        self._lazy.setSingleShot(True)
+        self._lazy.setInterval(120)
         self._lazy.timeout.connect(self._on_lazy)
 
-    def set_controller(self, c):
-        self._controller = c
-
-    # ================================================================
-    #  UI
-    # ================================================================
-
-    def _setup_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QHBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-
-        # --- Sidebar ---
-        self._sidebar = QFrame()
-        self._sidebar.setFixedWidth(self.SIDEBAR_W)
-        self._sidebar.setStyleSheet(_SB_LIGHT)  # light by default
-        sb = QVBoxLayout(self._sidebar)
-        sb.setContentsMargins(10, 14, 10, 12); sb.setSpacing(5)
-
-        # Single mode toggle
-        ml = QLabel("VIEW MODE"); ml.setStyleSheet(_LBL_L); sb.addWidget(ml)
-        self._btn_sbs = QPushButton("Side-by-Side")
-        self._btn_sbs.setCheckable(True); self._btn_sbs.setChecked(True)
-        self._btn_sbs.clicked.connect(lambda: self._set_mode(False))
-        self._btn_sbs.setStyleSheet(_TOGGLE_L)
-        self._btn_3df = QPushButton("3D Flip")
-        self._btn_3df.setCheckable(True)
-        self._btn_3df.clicked.connect(lambda: self._set_mode(True))
-        self._btn_3df.setStyleSheet(_TOGGLE_L)
-        tr = QHBoxLayout(); tr.setSpacing(4)
-        tr.addWidget(self._btn_sbs, 1); tr.addWidget(self._btn_3df, 1)
-        sb.addLayout(tr); sb.addSpacing(8)
-
-        # Nav
-        nl = QLabel("NAVIGATION"); nl.setStyleSheet(_LBL_L); sb.addWidget(nl)
-        nr = QHBoxLayout(); nr.setSpacing(4)
-        self._prev = QPushButton(chr(0x25C0)); self._prev.setStyleSheet(_NAV_L)
-        self._prev.clicked.connect(self._go_prev)
-        self._next = QPushButton(chr(0x25B6)); self._next.setStyleSheet(_NAV_L)
-        self._next.clicked.connect(self._go_next)
-        self._slider = QSlider(Qt.Orientation.Horizontal)
-        self._slider.setMinimum(0); self._slider.setMaximum(0)
-        self._slider.valueChanged.connect(self._on_slider)
-        nr.addWidget(self._prev); nr.addWidget(self._slider, 1); nr.addWidget(self._next)
-        sb.addLayout(nr)
-        self._nav_label = QLabel("Image: 0 / 0")
-        self._nav_label.setStyleSheet(_CNT_L)
-        self._nav_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sb.addWidget(self._nav_label); sb.addSpacing(6)
-
-        s1 = QLabel(chr(0x2500)*12); s1.setStyleSheet(_SEP_L)
-        s1.setAlignment(Qt.AlignmentFlag.AlignCenter); sb.addWidget(s1)
-
-        self.status_bar_widget = StatusBarWidget(); sb.addWidget(self.status_bar_widget)
-        sb.addSpacing(2)
-        s2 = QLabel(chr(0x2500)*12); s2.setStyleSheet(_SEP_L)
-        s2.setAlignment(Qt.AlignmentFlag.AlignCenter); sb.addWidget(s2)
-
-        self.params_widget = ParamsWidget(); sb.addWidget(self.params_widget)
-        sb.addStretch()
-
-        self._theme_btn = QPushButton(chr(0x2600)+"  Light")
-        self._theme_btn.setStyleSheet(_THM_L)
-        self._theme_btn.clicked.connect(self._toggle_theme); sb.addWidget(self._theme_btn)
-
-        self._s_lbls = [ml, nl]; self._s_seps = [s1, s2]
-
-        # --- Right content ---
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setStyleSheet("QScrollArea { border: none; " + _CONT_D + " }")
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        cw = QWidget(); cw.setStyleSheet(_CONT_D)
-        cl = QVBoxLayout(cw); cl.setContentsMargins(12, 12, 12, 12); cl.setSpacing(6)
-
-        # Title area
-        title_row = QHBoxLayout()
-        self._title_label = QLabel("Clustering Comparison")
-        self._title_label.setStyleSheet(_TITLE_L)
-        self._subtitle_label = QLabel("Compare ground truth vs prediction results")
-        self._subtitle_label.setStyleSheet(_SUBTITLE_L)
-        tv = QVBoxLayout()
-        tv.addWidget(self._title_label); tv.addWidget(self._subtitle_label)
-        title_row.addLayout(tv, 1)
-        self._ds_label = QLabel("DLPFC")
-        self._ds_label.setStyleSheet(_DS_L)
-        title_row.addWidget(self._ds_label)
-        cl.addLayout(title_row)
-        cl.addSpacing(4)
-
-        # Comparison content
-        self.comparison_widget = ComparisonViewWidget()
-        self.comparison_widget.setMinimumHeight(350)
-        self._3d_widget = Overlay3DViewWidget()
-        self._3d_widget.setMinimumHeight(350); self._3d_widget.setVisible(False)
-
-        cl.addWidget(self.comparison_widget, 4)
-        cl.addWidget(self._3d_widget, 4)
-
-        # Curve
-        self._curve_label = QLabel("Training Progress")
-        self._curve_label.setStyleSheet(
-            "color: #999; font-size: 10px; font-weight: 600; padding: 4px 0 2px;"
-        )
-        cl.addWidget(self._curve_label)
-        self.curve_widget = TrainingCurveWidget()
-        self.curve_widget.setFixedHeight(170)
-        cl.addWidget(self.curve_widget)
-        cl.addStretch()
-
-        self._scroll.setWidget(cw)
-        root.addWidget(self._sidebar)
-        root.addWidget(self._scroll, 1)
-
-        self._qt_status = QStatusBar(); self.setStatusBar(self._qt_status)
-
-        # Apply initial theme
-        apply_theme(False)
+        self._build_ui()
         self._apply_widget_theme(False)
 
     # ================================================================
-    #  Theme
+    #  UI build
     # ================================================================
+    def _build_ui(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-    def _toggle_theme(self):
-        self._dark_theme = not self._dark_theme
-        d = self._dark_theme
-        self._apply_theme_full(d)
-
-    def _apply_theme_full(self, d: bool):
-        """Apply both palette and widget-level stylesheets for the given theme."""
-        apply_theme(d)
-        self._theme_btn.setText((chr(0x263E)+"  Dark") if d else (chr(0x2600)+"  Light"))
-
-        self._apply_widget_theme(d)
-
-    def _apply_widget_theme(self, d: bool):
-        """Update widget-level stylesheets for the given theme (d=True for dark)."""
-        self._title_label.setStyleSheet(_TITLE_D if d else _TITLE_L)
-        self._subtitle_label.setStyleSheet(_SUBTITLE_D if d else _SUBTITLE_L)
-        self._ds_label.setStyleSheet(_DS_D if d else _DS_L)
-
-        self._sidebar.setStyleSheet(_SB_DARK if d else _SB_LIGHT)
-        ls = _LBL_D if d else _LBL_L
-        for w in self._s_lbls: w.setStyleSheet(ls)
-        self._nav_label.setStyleSheet(_CNT_D if d else _CNT_L)
-        ss = _SEP_D if d else _SEP_L
-        for w in self._s_seps: w.setStyleSheet(ss)
-
-        ts = _TOGGLE_D if d else _TOGGLE_L
-        self._btn_sbs.setStyleSheet(ts); self._btn_3df.setStyleSheet(ts)
-        ns = _NAV_D if d else _NAV_L
-        self._prev.setStyleSheet(ns); self._next.setStyleSheet(ns)
-        self._theme_btn.setStyleSheet(_THM_D if d else _THM_L)
-
-        self._scroll.setStyleSheet(
-            "QScrollArea { border: none; " + (_CONT_D if d else _CONT_L) + " }"
+        # ---- Sidebar ----
+        self._sidebar = Sidebar(
+            active_key="clustering",
+            on_theme_toggle=self._toggle_theme,
+            theme_is_dark=self._dark_theme,
         )
-        self._scroll.widget().setStyleSheet(_CONT_D if d else _CONT_L)
-        self._curve_label.setStyleSheet(
-            ("color: rgba(255,255,255,0.35);" if d else "color: #999;")
-            + " font-size: 10px; font-weight: 600; padding: 4px 0 2px;"
-        )
-        self.comparison_widget.update_theme(d)
-        self._3d_widget.update_theme(d)
-        self.curve_widget.update_theme(d)
-        self.status_bar_widget.update_theme(d)
-        self.params_widget.update_theme(d)
+        self._sidebar.module_selected.connect(self._on_module_selected)
+        root.addWidget(self._sidebar)
+
+        # ---- Right scrollable panel ----
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._content = QWidget()
+        self._content.setStyleSheet(_CONTENT_LIGHT)
+        cl = QVBoxLayout(self._content)
+        cl.setContentsMargins(24, 20, 24, 20)
+        cl.setSpacing(12)
+
+        self._build_title_row(cl)
+        self._build_visualization_area(cl)
+        self._build_data_area(cl)
+        cl.addStretch()
+
+        self._scroll.setWidget(self._content)
+        root.addWidget(self._scroll, 1)
+
+        # Status bar
+        self._qt_status = QStatusBar()
+        self.setStatusBar(self._qt_status)
+
+    def _build_title_row(self, parent_layout: QVBoxLayout) -> None:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+
+        # Title + subtitle (left)
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        self._title_label = QLabel("Clustering Comparison")
+        self._title_label.setStyleSheet(_TITLE_LIGHT)
+        self._subtitle_label = QLabel("Compare ground truth vs prediction results")
+        self._subtitle_label.setStyleSheet(_SUBTITLE_LIGHT)
+        title_col.addWidget(self._title_label)
+        title_col.addWidget(self._subtitle_label)
+        row.addLayout(title_col, 1)
+
+        # Mode toggle (Side-by-Side / 3D Flip) - small, top right
+        self._btn_sbs = QPushButton("Side-by-Side")
+        self._btn_sbs.setCheckable(True)
+        self._btn_sbs.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_sbs.setStyleSheet(_MODE_BTN_LIGHT)
+        self._btn_sbs.clicked.connect(lambda: self._set_mode(False))
+
+        self._btn_3df = QPushButton("3D Flip")
+        self._btn_3df.setCheckable(True)
+        self._btn_3df.setChecked(True)
+        self._btn_3df.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_3df.setStyleSheet(_MODE_BTN_LIGHT)
+        self._btn_3df.clicked.connect(lambda: self._set_mode(True))
+
+        mode_box = QHBoxLayout()
+        mode_box.setSpacing(4)
+        mode_box.addWidget(self._btn_sbs)
+        mode_box.addWidget(self._btn_3df)
+        row.addLayout(mode_box)
+
+        # Dataset + section dropdowns
+        self._dataset_combo = QComboBox()
+        self._dataset_combo.addItem("DLPFC")
+        self._dataset_combo.setFixedWidth(96)
+        self._dataset_combo.setStyleSheet(_DROPDOWN_LIGHT)
+        self._dataset_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self._section_combo = QComboBox()
+        self._section_combo.setFixedWidth(110)
+        self._section_combo.setStyleSheet(_DROPDOWN_LIGHT)
+        self._section_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._section_combo.currentIndexChanged.connect(self._on_section_changed)
+
+        row.addSpacing(8)
+        row.addWidget(self._dataset_combo)
+        row.addWidget(self._section_combo)
+
+        parent_layout.addLayout(row)
+
+        # Notice bar (for fallback / missing-pred)
+        self._notice = QFrame()
+        self._notice.setObjectName("notice")
+        self._notice.setStyleSheet(_NOTICE_LIGHT)
+        self._notice.setVisible(False)
+        nl = QHBoxLayout(self._notice)
+        nl.setContentsMargins(10, 6, 10, 6)
+        self._notice_label = QLabel("")
+        self._notice_label.setObjectName("noticeText")
+        self._notice_label.setStyleSheet("color: #ad6800; font-size: 11px;")
+        nl.addWidget(self._notice_label)
+        nl.addStretch()
+        parent_layout.addWidget(self._notice)
+
+    def _build_visualization_area(self, parent_layout: QVBoxLayout) -> None:
+        # Side-by-side widget (hidden by default)
+        self._comparison_widget = ComparisonViewWidget()
+        self._comparison_widget.setMinimumHeight(420)
+        self._comparison_widget.setVisible(False)
+
+        # 3D Flip widget (default)
+        self._view_3d = Overlay3DViewWidget()
+        self._view_3d.setMinimumHeight(420)
+        self._view_3d.setVisible(True)
+
+        parent_layout.addWidget(self._view_3d, 0)
+        parent_layout.addWidget(self._comparison_widget, 0)
+
+    def _build_data_area(self, parent_layout: QVBoxLayout) -> None:
+        self._data_area = DataAreaWidget(dark=self._dark_theme)
+        parent_layout.addWidget(self._data_area, 0)
 
     # ================================================================
     #  Mode
     # ================================================================
-
-    def _set_mode(self, is_3dflip):
+    def _set_mode(self, is_3dflip: bool) -> None:
         self._is_3dflip_mode = is_3dflip
         self._btn_sbs.setChecked(not is_3dflip)
         self._btn_3df.setChecked(is_3dflip)
-        self._apply_mode()
+        self._view_3d.setVisible(is_3dflip)
+        self._comparison_widget.setVisible(not is_3dflip)
+        self._refresh_current()
 
-    def _apply_mode(self):
+    def _refresh_current(self) -> None:
+        """Re-render the currently-selected section in the active view mode."""
         if self._is_3dflip_mode:
-            self.comparison_widget.setVisible(False)
-            self._3d_widget.setVisible(True)
-            n = len(self._overlay_datasets)
-            self._nav_label.setText(
-                "Section: " + str(self._current_index+1) + " / " + str(max(n,1))
-            )
-            self._slider.setMaximum(max(n-1,0)); self._slider.setValue(self._current_index)
-            self._prev.setEnabled(n>1); self._next.setEnabled(n>1)
-            if self._controller and self._overlay_datasets:
-                self._controller.show_overlay_at(self._current_index)
+            if self._overlay_datasets and 0 <= self._current_index < len(self._overlay_datasets):
+                self._show_overlay_at(self._current_index)
+            else:
+                self._view_3d.show_no_data()
         else:
-            self._3d_widget.setVisible(False)
-            self.comparison_widget.setVisible(True)
-            if self._collection:
-                n = len(self._collection.pairs)
-                self._nav_label.setText(
-                    "Image: " + str(self._current_index+1) + " / " + str(max(n,1))
-                )
-                self._slider.setMaximum(max(n-1,0)); self._slider.setValue(self._current_index)
-                self._prev.setEnabled(n>1); self._next.setEnabled(n>1)
+            if self._collection and self._collection.pairs and 0 <= self._current_index < len(self._collection.pairs):
                 self._show_image(self._current_index)
+            else:
+                self._comparison_widget.show_no_data()
 
     # ================================================================
-    #  Public
+    #  Theme
     # ================================================================
+    def _toggle_theme(self) -> None:
+        self._dark_theme = not self._dark_theme
+        self._apply_widget_theme(self._dark_theme)
+        self._sidebar.set_dark(self._dark_theme)
+        self._view_3d.update_theme(self._dark_theme)
+        self._data_area.set_dark(self._dark_theme)
+        self._comparison_widget.update_theme(self._dark_theme)
 
-    def set_overlay_datasets(self, dss):
-        self._overlay_datasets = dss; self._current_index = 0
-        if not dss:
-            self._3d_widget.show_no_data(); return
-        self._slider.setMaximum(len(dss)-1); self._slider.setValue(0)
-        self._prev.setEnabled(len(dss)>1); self._next.setEnabled(len(dss)>1)
-        if self._is_3dflip_mode: self._apply_mode()
+    def _apply_widget_theme(self, dark: bool) -> None:
+        apply_theme(dark)
+        self._title_label.setStyleSheet(_TITLE_DARK if dark else _TITLE_LIGHT)
+        self._subtitle_label.setStyleSheet(_SUBTITLE_DARK if dark else _SUBTITLE_LIGHT)
+        self._content.setStyleSheet(_CONTENT_DARK if dark else _CONTENT_LIGHT)
+        self._scroll.setStyleSheet(
+            f"QScrollArea {{ border: none; background-color: "
+            f"{'#121214' if dark else '#ffffff'}; }}"
+        )
+        self._dataset_combo.setStyleSheet(_DROPDOWN_DARK if dark else _DROPDOWN_LIGHT)
+        self._section_combo.setStyleSheet(_DROPDOWN_DARK if dark else _DROPDOWN_LIGHT)
+        mb = _MODE_BTN_DARK if dark else _MODE_BTN_LIGHT
+        self._btn_sbs.setStyleSheet(mb); self._btn_3df.setStyleSheet(mb)
+        self._notice.setStyleSheet(_NOTICE_DARK if dark else _NOTICE_LIGHT)
+        self._notice_label.setStyleSheet(
+            "color: #f5b04a; font-size: 11px;" if dark else
+            "color: #ad6800; font-size: 11px;"
+        )
 
-    def show_overlay_dataset(self, ds, idx):
-        self._current_index = idx
-        n = len(self._overlay_datasets)
-        self._nav_label.setText("Section: "+str(idx+1)+" / "+str(max(n,1)))
-        self._slider.setValue(idx)
-        self._3d_widget.set_dataset(ds)
+    # ================================================================
+    #  Sidebar module selection
+    # ================================================================
+    def _on_module_selected(self, key: str) -> None:
+        if key == "clustering":
+            return
+        # All other modules: not implemented yet
+        QMessageBox.information(
+            self,
+            "Module not implemented",
+            f"The module \"{key}\" is part of the ClustroView platform navigation\n"
+            f"but is not yet implemented. Only the Clustering Comparison page is\n"
+            f"available in this build.",
+        )
 
-    def set_collection(self, coll):
-        self._collection = coll; self._current_index = 0
+    # ================================================================
+    #  Public API used by controller
+    # ================================================================
+    def set_controller(self, c) -> None:
+        self._controller = c
+
+    def set_collection(self, coll: ImageCollection) -> None:
+        self._collection = coll
+        ids = [p.section_id for p in coll.pairs]
+        self._section_combo.blockSignals(True)
+        self._section_combo.clear()
+        if ids:
+            self._section_combo.addItems(ids)
+        self._section_combo.blockSignals(False)
         if not coll.pairs:
-            self._slider.setMaximum(0)
-            self._prev.setEnabled(False); self._next.setEnabled(False)
-            self._nav_label.setText("Image: 0 / 0")
-            self.comparison_widget.show_no_data(); return
-        self._slider.setMaximum(len(coll.pairs)-1); self._slider.setValue(0)
-        self._prev.setEnabled(True); self._next.setEnabled(True)
-        if not self._is_3dflip_mode: self._show_image(0)
+            self._view_3d.show_no_data()
+            self._comparison_widget.show_no_data()
+            self._data_area.update_dataset(None)
+            self._show_notice("No image pairs found in DLPFC_result/")
+            return
+        self._current_index = 0
+        self._section_combo.setCurrentIndex(0)
+        self._refresh_current()
 
-    def show_image(self, idx): self._show_image(idx)
+    def set_overlay_datasets(self, datasets: list[OverlayDataset]) -> None:
+        self._overlay_datasets = datasets
 
-    def _show_image(self, idx):
-        if self._is_3dflip_mode: return
-        if not self._collection or not self._collection.pairs: return
-        if idx < 0 or idx >= len(self._collection.pairs): return
+    def show_overlay_dataset(self, ds: OverlayDataset, idx: int) -> None:
+        self._current_index = idx
+        # Section combo is already in sync (controller drives it)
+        self._show_overlay_at(idx)
+
+    def show_image(self, idx: int) -> None:
+        self._show_image(idx)
+
+    def show_status_message(self, msg: str, timeout: int = 4000) -> None:
+        self._qt_status.showMessage(msg, timeout)
+
+    def show_mismatched_points_tab(self) -> None:
+        self._data_area.show_mismatched_points()
+
+    # ================================================================
+    #  Internal: show data
+    # ================================================================
+    def _show_overlay_at(self, idx: int) -> None:
+        if not (0 <= idx < len(self._overlay_datasets)):
+            return
+        self._current_index = idx
+        ds = self._overlay_datasets[idx]
+        gt_path, pred_path = self._resolve_image_paths(ds.section_id)
+        self._gt_image_path = gt_path
+        self._pred_image_path = pred_path
+        # If the pred image is missing, show the notice
+        if pred_path is None:
+            self._show_notice(
+                f"Prediction image for {ds.section_id} is missing. "
+                f"Showing GT on both sides."
+            )
+        else:
+            self._hide_notice()
+        # If the dataset has no pred column either, also show the notice
+        if not ds.has_pred:
+            self._show_notice(
+                f"No prediction column found in metadata for {ds.section_id}. "
+                f"Showing GT only."
+            )
+        self._view_3d.set_dataset(ds)
+        self._data_area.update_dataset(ds)
+
+    def _show_image(self, idx: int) -> None:
+        if not self._collection or not self._collection.pairs:
+            return
+        if not (0 <= idx < len(self._collection.pairs)):
+            return
         self._current_index = idx
         p = self._collection.pairs[idx]
-        self._nav_label.setText("Image: "+str(idx+1)+" / "+str(len(self._collection.pairs)))
-        if self._collection.fallback_mode:
-            self.comparison_widget.show_fallback(p)
+        if self._collection.fallback_mode or p.pred_missing:
+            self._comparison_widget.show_fallback(p)
         else:
-            self.comparison_widget.show_pair(p)
-        if self.comparison_widget.sync_locked:
-            self.comparison_widget._gt_panel.image_label.reset_view(emit=False)
-            self.comparison_widget._pred_panel.image_label.reset_view(emit=False)
+            self._comparison_widget.show_pair(p)
+        self._section_combo.blockSignals(True)
+        self._section_combo.setCurrentIndex(idx)
+        self._section_combo.blockSignals(False)
+
+    def _resolve_image_paths(self, section_id: str) -> tuple[Optional[str], Optional[str]]:
+        """Find GT and Pred PNG paths for a section (matches the image_manager
+        layout)."""
+        if self._controller is None or self._collection is None:
+            return None, None
+        for pair in self._collection.pairs:
+            if pair.section_id == section_id:
+                gt = str(pair.gt_path) if pair.gt_path else None
+                pr = str(pair.pred_path) if (pair.pred_path and not pair.pred_missing) else None
+                return gt, pr
+        return None, None
 
     # ================================================================
-    #  Nav
+    #  Internal: notice bar
     # ================================================================
+    def _show_notice(self, text: str) -> None:
+        self._notice_label.setText(text)
+        self._notice.setVisible(True)
 
-    def _go_prev(self):
-        if self._current_index > 0: self._slider.setValue(self._current_index-1)
-    def _go_next(self):
-        mx = (len(self._overlay_datasets)-1 if self._is_3dflip_mode
-              else (len(self._collection.pairs)-1 if self._collection else 0))
-        if self._current_index < mx: self._slider.setValue(self._current_index+1)
-    def _on_slider(self, v): self._lazy.start()
-    def _on_lazy(self):
-        idx = self._slider.value()
-        if self._is_3dflip_mode:
-            if self._controller: self._controller.show_overlay_at(idx)
-        else:
-            self._show_image(idx)
+    def _hide_notice(self) -> None:
+        self._notice.setVisible(False)
 
-    def show_status_message(self, msg):
-        self._qt_status.showMessage(msg, 4000)
+    # ================================================================
+    #  Internal: section change
+    # ================================================================
+    def _on_section_changed(self, idx: int) -> None:
+        self._lazy.start()
+
+    def _on_lazy(self) -> None:
+        idx = self._section_combo.currentIndex()
+        if idx < 0:
+            return
+        self._current_index = idx
+        self._refresh_current()
+        if self._controller is not None:
+            self._controller.on_section_changed(idx)
