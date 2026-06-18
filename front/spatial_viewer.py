@@ -327,7 +327,7 @@ class SpatialViewerWidget(QWidget):
         if ds is None:
             return
 
-        # Remove old point actors
+        # Remove old point actors (including highlight)
         for name in list(p.actors.keys()):
             if name.startswith("cell_points"):
                 p.remove_actor(name)
@@ -348,8 +348,8 @@ class SpatialViewerWidget(QWidget):
         pdata_gt["colors"] = colors_gt
         p.add_mesh(
             pdata_gt, scalars="colors", rgb=True,
-            point_size=22, render_points_as_spheres=True,
-            opacity=1.0, lighting=False, name="cell_points_gt",
+            point_size=10, render_points_as_spheres=True,
+            opacity=0.75, lighting=False, name="cell_points_gt",
         )
 
         # ---- Front layer: Results (or GT fallback) ----
@@ -381,8 +381,8 @@ class SpatialViewerWidget(QWidget):
         pdata_res["colors"] = colors_res
         p.add_mesh(
             pdata_res, scalars="colors", rgb=True,
-            point_size=22, render_points_as_spheres=True,
-            opacity=1.0, lighting=False, name="cell_points_res",
+            point_size=10, render_points_as_spheres=True,
+            opacity=0.75, lighting=False, name="cell_points_res",
         )
 
     def _update_labels(self):
@@ -421,13 +421,18 @@ class SpatialViewerWidget(QWidget):
         p.render()
 
     def _setup_hover(self):
-        """Setup VTK mouse move observer for hover interaction."""
+        """Setup VTK mouse move observer for hover interaction (debounced)."""
         try:
             import vtk
             iren = self._plotter.iren.interactor
             self._hover_observer_id = iren.AddObserver("MouseMoveEvent", self._on_mouse_move)
             self._picker = vtk.vtkPointPicker()
-            self._hover_timer = None
+            self._picker.SetTolerance(0.005)
+            self._hover_timer = QTimer(self)
+            self._hover_timer.setSingleShot(True)
+            self._hover_timer.setInterval(140)
+            self._hover_timer.timeout.connect(self._process_hover)
+            self._pending_hover_xy = None
         except Exception as exc:
             logger.warning("Failed to setup hover: %s", exc)
 
@@ -438,25 +443,61 @@ class SpatialViewerWidget(QWidget):
                 self._hover_observer_id = None
         except:
             pass
+        try:
+            if hasattr(self, "_hover_timer") and self._hover_timer is not None:
+                self._hover_timer.stop()
+                self._hover_timer = None
+        except:
+            pass
 
     def _on_mouse_move(self, obj, event):
-        """Handle mouse move for hover in analysis mode."""
+        """Queue hover processing - only fires when mouse is still for 140ms."""
         if self._dataset is None or self._mode != "analysis":
             return
         try:
-            import vtk
             iren = obj
             if not hasattr(iren, "GetEventPosition"):
                 return
             x, y = iren.GetEventPosition()
-            picker = self._picker
-            picker.Pick(x, y, 0, self._plotter.renderer)
-            pid = picker.GetPointId()
+            self._pending_hover_xy = (x, y)
+            # Restart debounce timer
+            if self._hover_timer is not None:
+                self._hover_timer.start()
+        except:
+            pass
+
+    def _process_hover(self):
+        """Actually perform the hover pick after debounce delay."""
+        if self._pending_hover_xy is None or self._dataset is None:
+            return
+        try:
+            x, y = self._pending_hover_xy
+            self._pending_hover_xy = None
+            self._picker.Pick(x, y, 0, self._plotter.renderer)
+            pid = self._picker.GetPointId()
             if pid < 0:
                 return
-            # pid is the point index in the PolyData
-            if 0 <= pid < len(self._dataset.cells):
-                cluster = self._dataset.cells[pid].cluster
+
+            # Determine which dataset was picked by checking the actual dataset
+            target_ds = self._dataset  # default: GT
+            try:
+                picked_ds = self._picker.GetDataSet()
+                if picked_ds is not None:
+                    p = self._plotter
+                    for name in ("cell_points_res", "cell_points_res_hl"):
+                        actor = p.actors.get(name)
+                        if actor is not None:
+                            try:
+                                if actor.GetMapper().GetInput() is picked_ds:
+                                    target_ds = self._results_dataset if self._results_dataset is not None else self._dataset
+                                    break
+                            except:
+                                continue
+            except:
+                pass
+
+            if 0 <= pid < len(target_ds.cells):
+                cluster = target_ds.cells[pid].cluster
                 if cluster != self._hovered_cluster:
                     self._hovered_cluster = cluster
                     self._highlight_cluster(cluster)
@@ -464,7 +505,7 @@ class SpatialViewerWidget(QWidget):
             pass
 
     def _highlight_cluster(self, cluster: str):
-        """Dim all cells, highlight the specified cluster. Update colors in-place."""
+        """Dim non-matching cells (small+transparent), enlarge matching cells (big+opaque)."""
         if self._dataset is None:
             return
         ds = self._dataset
@@ -472,49 +513,94 @@ class SpatialViewerWidget(QWidget):
 
         indices = set(ds.clusters.get(cluster, []))
         n = len(ds.cells)
-        colors = np.zeros((n, 3), dtype=np.float32)
-        for i, cell in enumerate(ds.cells):
-            if i in indices:
-                colors[i] = get_cluster_color(cell.cluster)
-            else:
-                colors[i] = (0.82, 0.82, 0.82)
+        dim_color = (0.82, 0.82, 0.82)
 
-        # Update GT layer
+        # ---- GT Layer: dim all, then overlay highlight ----
+        gt_colors = np.zeros((n, 3), dtype=np.float32)
+        for i, cell in enumerate(ds.cells):
+            gt_colors[i] = dim_color
         try:
             actor = p.actors["cell_points_gt"]
+            actor.GetProperty().SetPointSize(5)
+            actor.GetProperty().SetOpacity(0.30)
             pdata = actor.GetMapper().GetInput()
-            pdata["colors"] = colors
+            pdata["colors"] = gt_colors
             actor.GetMapper().Modified()
         except:
             pass
 
-        # Update results layer similarly
+        # Create highlight points for GT layer
+        if indices:
+            gt_highlight_pts = np.array([[ds.cells[i].x, ds.cells[i].y, self._gap/2 + 0.015] for i in indices])
+            gt_highlight_colors = np.array([get_cluster_color(ds.cells[i].cluster) for i in indices])
+            gt_hl_pdata = pv.PolyData(gt_highlight_pts)
+            gt_hl_pdata["colors"] = gt_highlight_colors
+            for name in list(p.actors.keys()):
+                if name.startswith("cell_points_gt_hl"):
+                    p.remove_actor(name)
+            p.add_mesh(
+                gt_hl_pdata, scalars="colors", rgb=True,
+                point_size=28, render_points_as_spheres=True,
+                opacity=1.0, lighting=False, name="cell_points_gt_hl",
+            )
+
+        # ---- Results Layer ----
         res_ds = self._results_dataset
         if res_ds is not None and res_ds is not ds:
             r_indices = set(res_ds.clusters.get(cluster, []))
             rn = len(res_ds.cells)
-            r_colors = np.zeros((rn, 3), dtype=np.float32)
+            res_colors = np.zeros((rn, 3), dtype=np.float32)
             for i, cell in enumerate(res_ds.cells):
-                if i in r_indices:
-                    r_colors[i] = get_cluster_color(cell.cluster)
-                else:
-                    r_colors[i] = (0.82, 0.82, 0.82)
+                res_colors[i] = dim_color
             try:
                 actor = p.actors["cell_points_res"]
+                actor.GetProperty().SetPointSize(5)
+                actor.GetProperty().SetOpacity(0.30)
                 pdata = actor.GetMapper().GetInput()
-                pdata["colors"] = r_colors
+                pdata["colors"] = res_colors
                 actor.GetMapper().Modified()
             except:
                 pass
+            if r_indices:
+                z_res = self._gap / 2 + 0.015
+                res_hl_pts = np.array([[res_ds.cells[i].x, res_ds.cells[i].y, z_res] for i in r_indices])
+                res_hl_colors = np.array([get_cluster_color(res_ds.cells[i].cluster) for i in r_indices])
+                res_hl_pdata = pv.PolyData(res_hl_pts)
+                res_hl_pdata["colors"] = res_hl_colors
+                for name in list(p.actors.keys()):
+                    if name.startswith("cell_points_res_hl"):
+                        p.remove_actor(name)
+                p.add_mesh(
+                    res_hl_pdata, scalars="colors", rgb=True,
+                    point_size=28, render_points_as_spheres=True,
+                    opacity=1.0, lighting=False, name="cell_points_res_hl",
+                )
         else:
-            # Both sides same data
+            # Both sides same: dim Res layer too
             try:
                 actor = p.actors["cell_points_res"]
+                actor.GetProperty().SetPointSize(5)
+                actor.GetProperty().SetOpacity(0.30)
                 pdata = actor.GetMapper().GetInput()
-                pdata["colors"] = colors
+                pdata["colors"] = gt_colors
                 actor.GetMapper().Modified()
             except:
                 pass
+            # Reuse GT highlight for Res side
+            if indices:
+                z_res = self._gap / 2 + 0.015
+                res_hl_pts = np.array([[ds.cells[i].x, ds.cells[i].y, z_res] for i in indices])
+                res_hl_colors = np.array([get_cluster_color(ds.cells[i].cluster) for i in indices])
+                res_hl_pdata = pv.PolyData(res_hl_pts)
+                res_hl_pdata["colors"] = res_hl_colors
+                for name in list(p.actors.keys()):
+                    if name.startswith("cell_points_res_hl"):
+                        p.remove_actor(name)
+                p.add_mesh(
+                    res_hl_pdata, scalars="colors", rgb=True,
+                    point_size=28, render_points_as_spheres=True,
+                    opacity=1.0, lighting=False, name="cell_points_res_hl",
+                )
 
         self._clear_boundaries()
         if indices:
@@ -524,7 +610,7 @@ class SpatialViewerWidget(QWidget):
         p.render()
 
     def _clear_highlight(self):
-        """Restore all cells to their original cluster colors."""
+        """Restore all cells to original colors, size, and opacity."""
         if self._dataset is None:
             return
         self._hovered_cluster = None
@@ -537,6 +623,8 @@ class SpatialViewerWidget(QWidget):
         # Restore GT layer
         try:
             actor = self._plotter.actors["cell_points_gt"]
+            actor.GetProperty().SetPointSize(10)
+            actor.GetProperty().SetOpacity(0.75)
             pdata = actor.GetMapper().GetInput()
             pdata["colors"] = colors
             actor.GetMapper().Modified()
@@ -552,6 +640,8 @@ class SpatialViewerWidget(QWidget):
                 r_colors[i] = get_cluster_color(cell.cluster)
             try:
                 actor = self._plotter.actors["cell_points_res"]
+                actor.GetProperty().SetPointSize(10)
+                actor.GetProperty().SetOpacity(0.75)
                 pdata = actor.GetMapper().GetInput()
                 pdata["colors"] = r_colors
                 actor.GetMapper().Modified()
@@ -560,11 +650,18 @@ class SpatialViewerWidget(QWidget):
         else:
             try:
                 actor = self._plotter.actors["cell_points_res"]
+                actor.GetProperty().SetPointSize(10)
+                actor.GetProperty().SetOpacity(0.75)
                 pdata = actor.GetMapper().GetInput()
                 pdata["colors"] = colors
                 actor.GetMapper().Modified()
             except:
                 pass
+
+        # Remove highlight actors
+        for name in list(self._plotter.actors.keys()):
+            if name.startswith("cell_points_gt_hl") or name.startswith("cell_points_res_hl"):
+                self._plotter.remove_actor(name)
 
         self._clear_boundaries()
         self._plotter.render()
