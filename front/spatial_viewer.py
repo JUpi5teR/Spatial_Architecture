@@ -1,0 +1,612 @@
+﻿# coding: utf-8
+# Build: spatial_viewer.py - PySide6 + PyVista spatial transcriptomics viewer
+
+import numpy as np
+import json
+import csv
+import os
+from pathlib import Path
+import logging
+logger = logging.getLogger(__name__)
+from typing import Optional
+from dataclasses import dataclass, field
+from collections import defaultdict
+
+# ============================================================
+# DATA LOADER
+# ============================================================
+@dataclass
+class CellData:
+    cell_id: str
+    x: float
+    y: float
+    cluster: str
+    metadata: dict = field(default_factory=dict)
+
+@dataclass
+class SpatialDataset:
+    section_id: str
+    cells: list[CellData] = field(default_factory=list)
+    clusters: dict[str, list[int]] = field(default_factory=dict)  # cluster_name -> cell indices
+    panel_w: float = 4.0
+    panel_h: float = 3.0
+
+def load_spatial_dataset(data_root: str, section_id: str,
+                         gt_column: str = "layer_guess_reordered") -> Optional[SpatialDataset]:
+    sec_dir = Path(data_root) / section_id
+    meta_path = sec_dir / "metadata.tsv"
+    pos_path = sec_dir / "spatial" / "tissue_positions_list.csv"
+    scale_path = sec_dir / "spatial" / "scalefactors_json.json"
+
+    if not meta_path.exists() or not pos_path.exists():
+        return None
+
+    # Read scale
+    scale = 0.15
+    if scale_path.exists():
+        with open(scale_path) as f:
+            scale = float(json.load(f).get("tissue_hires_scalef", 0.15))
+
+    # Read hires dim
+    hires_dim = 2000.0
+    img_path = sec_dir / "spatial" / "tissue_hires_image.png"
+    if img_path.exists():
+        try:
+            import cv2
+            im = cv2.imread(str(img_path))
+            if im is not None:
+                hires_dim = float(max(im.shape[0], im.shape[1]))
+        except:
+            pass
+
+    # Read positions (filter in_tissue=1)
+    positions = {}
+    with open(pos_path) as f:
+        for line in f:
+            parts = line.strip().split(",")
+            if len(parts) >= 6 and parts[1] == "1":
+                barcode = parts[0]
+                px_row, px_col = float(parts[4]), float(parts[5])
+                positions[barcode] = (px_row, px_col)
+
+    # Read metadata
+    meta_rows = []
+    with open(meta_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        fieldnames = reader.fieldnames or []
+        for row in reader:
+            meta_rows.append(row)
+
+    # Build cells
+    cells = []
+    clusters = defaultdict(list)
+    for i, row in enumerate(meta_rows):
+        barcode = row.get("barcode", "").strip()
+        if barcode not in positions:
+            continue
+        cluster = row.get(gt_column, "").strip()
+        if not cluster or cluster.upper() == "NA":
+            continue
+
+        px_row, px_col = positions[barcode]
+        hx = px_col * scale
+        hy = px_row * scale
+        x = (hx / hires_dim) * 4.0 - 2.0
+        y = 1.5 - (hy / hires_dim) * 3.0
+
+        metadata = {k: row.get(k, "") for k in fieldnames if k not in ("barcode", gt_column)}
+
+        cells.append(CellData(cell_id=barcode, x=x, y=y, cluster=cluster, metadata=metadata))
+        clusters[cluster].append(len(cells) - 1)
+
+    if not cells:
+        return None
+
+    return SpatialDataset(
+        section_id=section_id,
+        cells=cells,
+        clusters=dict(clusters),
+    )
+
+
+# ============================================================
+# ALPHA SHAPE / CONCAVE HULL (SciPy only)
+# ============================================================
+def compute_alpha_shape(points_2d: np.ndarray, alpha: float = 0.3) -> list[np.ndarray]:
+    """Compute alpha shape boundaries for 2D points using Delaunay triangulation.
+    Returns list of boundary polygons (each is Nx2 array), handles multiple regions.
+    """
+    from scipy.spatial import Delaunay
+    if len(points_2d) < 3:
+        return [points_2d]
+
+    tri = Delaunay(points_2d)
+    # For each triangle, compute circumradius
+    # Keep edges that belong to triangles with circumradius <= 1/alpha
+    edges_count = defaultdict(int)
+    for simplex in tri.simplices:
+        a, b, c = points_2d[simplex]
+        # Circumradius = abc / (4 * area)
+        ab = np.linalg.norm(b - a)
+        bc = np.linalg.norm(c - b)
+        ca = np.linalg.norm(a - c)
+        s = (ab + bc + ca) / 2.0
+        area = np.sqrt(max(0, s * (s - ab) * (s - bc) * (s - ca)))
+        if area < 1e-10:
+            continue
+        r = (ab * bc * ca) / (4.0 * area)
+        if r <= 1.0 / alpha:
+            for i, j in [(0,1), (1,2), (2,0)]:
+                edge = tuple(sorted((simplex[i], simplex[j])))
+                edges_count[edge] += 1
+
+    # Boundary edges appear exactly once
+    boundary_edges = [e for e, c in edges_count.items() if c == 1]
+
+    if not boundary_edges:
+        # Fallback: convex hull
+        from scipy.spatial import ConvexHull
+        hull = ConvexHull(points_2d)
+        return [points_2d[hull.vertices]]
+
+    # Build connected components of boundary edges
+    adj = defaultdict(list)
+    for u, v in boundary_edges:
+        adj[u].append(v)
+        adj[v].append(u)
+
+    visited = set()
+    polygons = []
+    for start in adj:
+        if start in visited:
+            continue
+        path = [start]
+        visited.add(start)
+        cur = start
+        while True:
+            nxt = None
+            for nb in adj[cur]:
+                if nb not in visited:
+                    nxt = nb
+                    break
+            if nxt is None:
+                # Try to close the loop
+                for nb in adj[cur]:
+                    if nb == start:
+                        break
+                break
+            path.append(nxt)
+            visited.add(nxt)
+            cur = nxt
+        if len(path) >= 3:
+            poly = points_2d[path]
+            polygons.append(poly)
+
+    return polygons if polygons else [points_2d]
+
+
+# ============================================================
+# LAYER COLORS
+# ============================================================
+CLUSTER_COLORS = {
+    "Layer1": "#5DADE2", "Layer2": "#2E86C1", "Layer3": "#2874A6",
+    "Layer4": "#1F618D", "Layer5": "#1A5276", "Layer6": "#154360",
+    "WM":     "#5D6D7E",
+}
+_FALLBACK = ["#008B8B","#008080","#0E6655","#1E90FF","#7B68EE","#6A5ACD",
+             "#483D8B","#4B0082","#8E44AD","#1ABC9C","#117A65","#191970"]
+
+def get_cluster_color(name: str) -> tuple:
+    h = CLUSTER_COLORS.get(name)
+    if not h:
+        h = _FALLBACK[sum(ord(c) for c in name) % len(_FALLBACK)]
+    h = h.lstrip("#")
+    return tuple(int(h[i:i+2], 16)/255.0 for i in (0,2,4))
+
+
+# ============================================================
+# MAIN VIEWER
+# ============================================================
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QApplication, QFrame, QHBoxLayout, QLabel,
+    QPushButton, QSizePolicy, QTextEdit,
+    QVBoxLayout, QWidget,
+)
+import pyvista as pv
+try:
+    import vtk
+    from vtkmodules.vtkRenderingCore import vtkPointPicker, vtkCellPicker
+except:
+    pass
+from pyvistaqt import QtInteractor
+
+
+class SpatialViewerWidget(QWidget):
+    cluster_hovered = Signal(str, int, dict)  # cluster_name, cell_count, metadata_preview
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dataset: Optional[SpatialDataset] = None
+        self._mode = "explore"
+        self._hovered_cluster: Optional[str] = None
+        self._boundary_actors = []
+        self._hover_observer_id = None
+
+        self._pw = 4.0
+        self._ph = 3.0
+        self._gap = 0.05
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self._plotter = QtInteractor(self)
+        self._plotter.set_background("#e4e8ec")
+        self._plotter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(self._plotter)
+
+        self._setup_scene()
+
+    def closeEvent(self, event):
+        """Clean up VTK resources before closing."""
+        try:
+            self._teardown_hover()
+        except:
+            pass
+        try:
+            self._plotter.close()
+        except:
+            pass
+        super().closeEvent(event)
+
+    def set_dark(self, dark: bool):
+        """Update plotter background to match theme."""
+        bg = "#1e1e21" if dark else "#e4e8ec"
+        self._plotter.set_background(bg)
+        self._plotter.render()
+
+    def _setup_scene(self):
+        p = self._plotter
+        p.clear()
+        gap = self._gap
+        hw, hh = self._pw / 2, self._ph / 2
+
+        # White border
+        margin = 0.25
+        bw, bh = self._pw + margin * 2, self._ph + margin * 2
+        bz = gap * 1.3
+        borders = [
+            pv.Cube(center=(0, self._ph/2+margin/2, 0), x_length=bw, y_length=margin, z_length=bz),
+            pv.Cube(center=(0, -self._ph/2-margin/2, 0), x_length=bw, y_length=margin, z_length=bz),
+            pv.Cube(center=(-self._pw/2-margin/2, 0, 0), x_length=margin, y_length=self._ph, z_length=bz),
+            pv.Cube(center=(self._pw/2+margin/2, 0, 0), x_length=margin, y_length=self._ph, z_length=bz),
+        ]
+        for i, b in enumerate(borders):
+            p.add_mesh(b, color="#ffffff", name=f"border_{i}", opacity=1.0, smooth_shading=True)
+
+        # Transparent planes
+        for name, z_pos in [("front_plane", gap/2), ("back_plane", -gap/2)]:
+            plane = pv.Plane(center=(0, 0, z_pos), direction=(0, 0, 1),
+                           i_size=self._pw, j_size=self._ph, i_resolution=1, j_resolution=1)
+            p.add_mesh(plane, color="#d0d5db", name=name, opacity=0.08, smooth_shading=True)
+
+        # Camera
+        p.camera_position = [(0, -self._ph*0.55, self._pw*0.85), (0, 0, 0), (0, 0, 1)]
+        p.camera.SetParallelProjection(False)
+        p.camera.SetViewAngle(40)
+
+        try:
+            p.remove_all_lights()
+            p.add_light(pv.Light(position=(self._pw, self._ph, self._pw*0.6), light_type="scene_light", intensity=0.75))
+            p.add_light(pv.Light(position=(-self._pw, -self._ph, self._pw*0.4), light_type="scene_light", intensity=0.40))
+        except:
+            pass
+
+        # Labels
+        p.add_text("", position="upper_left", font_size=10, color="#333333", name="label_gt")
+        p.add_text("", position="upper_right", font_size=10, color="#333333", name="label_mode")
+
+    def load_section(self, dataset: SpatialDataset):
+        self._dataset = dataset
+        self._hovered_cluster = None
+        self._clear_boundaries()
+        self._build_point_cloud()
+        self._update_labels()
+        self._plotter.render()
+
+    def _build_point_cloud(self):
+        p = self._plotter
+        ds = self._dataset
+        if ds is None:
+            return
+
+        # Remove old point actors
+        for name in list(p.actors.keys()):
+            if name.startswith("cell_"):
+                p.remove_actor(name)
+
+        # Create one point cloud with per-point colors
+        n = len(ds.cells)
+        pts = np.zeros((n, 3), dtype=np.float32)
+        colors = np.zeros((n, 3), dtype=np.float32)
+
+        z_front = self._gap / 2 + 0.01
+        for i, cell in enumerate(ds.cells):
+            pts[i] = [cell.x, cell.y, z_front]
+            colors[i] = get_cluster_color(cell.cluster)
+
+        pdata = pv.PolyData(pts)
+        pdata["colors"] = colors
+
+        p.add_mesh(
+            pdata, scalars="colors", rgb=True,
+            point_size=22, render_points_as_spheres=True,
+            opacity=1.0, lighting=False, name="cell_points",
+        )
+
+    def _update_labels(self):
+        p = self._plotter
+        ds = self._dataset
+        if ds is None:
+            return
+        sid = ds.section_id
+        mode_str = "Analysis" if self._mode == "analysis" else "Explore"
+        try:
+            p.actors["label_gt"].SetInput(f"Ground Truth  [{sid}]")
+            p.actors["label_mode"].SetInput(f"{mode_str} Mode")
+        except:
+            pass
+
+    def set_mode(self, mode: str):
+        self._mode = mode
+        p = self._plotter
+
+        if mode == "analysis":
+            p.camera.SetParallelProjection(True)
+            p.camera.SetParallelScale(1.8)
+            self._view_front()
+            self._setup_hover()
+        else:
+            p.camera.SetParallelProjection(False)
+            p.camera.SetViewAngle(40)
+            self._teardown_hover()
+            self._clear_highlight()
+            self._clear_boundaries()
+
+        self._update_labels()
+        p.render()
+
+    def _setup_hover(self):
+        """Setup VTK mouse move observer for hover interaction."""
+        try:
+            import vtk
+            iren = self._plotter.iren.interactor
+            self._hover_observer_id = iren.AddObserver("MouseMoveEvent", self._on_mouse_move)
+            self._picker = vtk.vtkPointPicker()
+            self._hover_timer = None
+        except Exception as exc:
+            logger.warning("Failed to setup hover: %s", exc)
+
+    def _teardown_hover(self):
+        try:
+            if hasattr(self, "_hover_observer_id") and self._hover_observer_id is not None:
+                self._plotter.iren.interactor.RemoveObserver(self._hover_observer_id)
+                self._hover_observer_id = None
+        except:
+            pass
+
+    def _on_mouse_move(self, obj, event):
+        """Handle mouse move for hover in analysis mode."""
+        if self._dataset is None or self._mode != "analysis":
+            return
+        try:
+            import vtk
+            iren = obj
+            if not hasattr(iren, "GetEventPosition"):
+                return
+            x, y = iren.GetEventPosition()
+            picker = self._picker
+            picker.Pick(x, y, 0, self._plotter.renderer)
+            pid = picker.GetPointId()
+            if pid < 0:
+                return
+            # pid is the point index in the PolyData
+            if 0 <= pid < len(self._dataset.cells):
+                cluster = self._dataset.cells[pid].cluster
+                if cluster != self._hovered_cluster:
+                    self._hovered_cluster = cluster
+                    self._highlight_cluster(cluster)
+        except:
+            pass
+
+    def _highlight_cluster(self, cluster: str):
+        """Dim all cells, highlight the specified cluster. Update colors in-place."""
+        if self._dataset is None:
+            return
+        ds = self._dataset
+        p = self._plotter
+
+        # Get cell indices for this cluster
+        indices = set(ds.clusters.get(cluster, []))
+        n = len(ds.cells)
+
+        # Build new color array
+        colors = np.zeros((n, 3), dtype=np.float32)
+        for i, cell in enumerate(ds.cells):
+            if i in indices:
+                colors[i] = get_cluster_color(cell.cluster)
+            else:
+                colors[i] = (0.82, 0.82, 0.82)  # dim gray
+
+        # Update colors on existing actor
+        try:
+            actor = p.actors["cell_points"]
+            pdata = actor.GetMapper().GetInput()
+            pdata["colors"] = colors
+            actor.GetMapper().Modified()
+        except:
+            pass
+
+        # Update boundaries
+        self._clear_boundaries()
+        if indices:
+            cluster_pts = np.array([[ds.cells[i].x, ds.cells[i].y] for i in indices])
+            self._add_boundaries(cluster_pts, cluster)
+
+        # Update info
+        self._update_cluster_info(cluster)
+
+        p.render()
+
+    def _clear_highlight(self):
+        """Restore all cells to their original cluster colors."""
+        if self._dataset is None:
+            return
+        self._hovered_cluster = None
+        ds = self._dataset
+        n = len(ds.cells)
+        colors = np.zeros((n, 3), dtype=np.float32)
+        for i, cell in enumerate(ds.cells):
+            colors[i] = get_cluster_color(cell.cluster)
+
+        try:
+            actor = self._plotter.actors["cell_points"]
+            pdata = actor.GetMapper().GetInput()
+            pdata["colors"] = colors
+            actor.GetMapper().Modified()
+        except:
+            pass
+        self._clear_boundaries()
+        self._plotter.render()
+
+    def _add_boundaries(self, pts: np.ndarray, cluster: str):
+        """Add alpha shape boundary for the highlighted cluster."""
+        if len(pts) < 3:
+            return
+        p = self._plotter
+        z_b = self._gap / 2 + 0.02  # slightly above points
+        color = get_cluster_color(cluster)
+
+        try:
+            polygons = compute_alpha_shape(pts, alpha=0.3)
+            for poly in polygons:
+                # Close the polygon
+                if len(poly) < 3:
+                    continue
+                poly_3d = np.column_stack([poly, np.full(len(poly), z_b)])
+                # Create line for outline
+                lines = np.arange(len(poly_3d) + 1) % len(poly_3d)
+                line_mesh = pv.PolyData(poly_3d, lines=np.column_stack([lines[:-1], lines[1:]]))
+                self._boundary_actors.append(
+                    p.add_mesh(line_mesh, color=color, line_width=3, name=f"boundary_{cluster}", opacity=0.9)
+                )
+        except Exception:
+            pass
+
+    def _clear_boundaries(self):
+        p = self._plotter
+        for name in list(p.actors.keys()):
+            if name.startswith("boundary_"):
+                p.remove_actor(name)
+        self._boundary_actors.clear()
+
+    def _update_cluster_info(self, cluster: str):
+        ds = self._dataset
+        if ds is None:
+            return
+        indices = ds.clusters.get(cluster, [])
+        count = len(indices)
+        if indices:
+            meta = ds.cells[indices[0]].metadata
+            meta_dict = {k: str(v)[:60] for k, v in list(meta.items())[:5]}
+        else:
+            meta_dict = {}
+        self.cluster_hovered.emit(cluster, count, meta_dict)
+
+    def _view_front(self):
+        self._plotter.camera_position = [(0, -self._ph*0.55, self._pw*0.85), (0, 0, 0), (0, 0, 1)]
+        self._plotter.render()
+
+    def _view_back(self):
+        self._plotter.camera_position = [(0, self._ph*0.55, -self._pw*0.85), (0, 0, 0), (0, 0, 1)]
+        self._plotter.render()
+
+    def view_front(self):
+        self._view_front()
+
+    def view_back(self):
+        self._view_back()
+
+
+# ============================================================
+# MAIN WINDOW
+# ============================================================
+SECTION_IDS = [
+    "151507", "151508", "151509", "151510",
+    "151669", "151670", "151671", "151672",
+    "151673", "151674", "151675", "151676",
+]
+
+
+def main():
+    import sys
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    w = QWidget()
+    w.setWindowTitle("Spatial Transcriptomics Viewer")
+    w.resize(1200, 800)
+    layout = QHBoxLayout(w)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+
+    viewer = SpatialViewerWidget()
+    layout.addWidget(viewer, 1)
+
+    panel = QFrame()
+    panel.setFixedWidth(220)
+    panel.setStyleSheet("""
+        QFrame {
+            background: rgba(30,30,35,0.92);
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 10px;
+        }
+    """)
+    playout = QVBoxLayout(panel)
+    playout.setContentsMargins(12, 10, 12, 10)
+    playout.setSpacing(4)
+
+    t = QLabel("Spatial Viewer")
+    t.setStyleSheet("font-size:13px;font-weight:700;color:#e8e8ec;")
+    playout.addWidget(t)
+
+    combo = QComboBox()
+    combo.addItems(SECTION_IDS)
+    playout.addWidget(combo)
+
+    def on_section(sid):
+        data_root = Path(__file__).resolve().parent.parent / "dataset" / "DLPFC"
+        ds = load_spatial_dataset(str(data_root), sid)
+        if ds:
+            viewer.load_section(ds)
+
+    combo.currentTextChanged.connect(on_section)
+
+    fv = QPushButton("Front View")
+    fv.clicked.connect(viewer.view_front)
+    playout.addWidget(fv)
+
+    bv = QPushButton("Back View")
+    bv.clicked.connect(viewer.view_back)
+    playout.addWidget(bv)
+
+    playout.addStretch()
+    layout.addWidget(panel, 0)
+
+    # Load first section
+    on_section(SECTION_IDS[0])
+
+    w.show()
+    sys.exit(app.exec())
+
+

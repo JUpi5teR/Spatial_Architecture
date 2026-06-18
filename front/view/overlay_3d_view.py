@@ -213,21 +213,38 @@ class Overlay3DViewWidget(QWidget):
         p.clear()
         hw, hh, gap = self._pw / 2, self._ph / 2, self._gap
 
-        edge_color = _PANEL_EDGE_DARK if self._dark else _PANEL_EDGE_LIGHT
-        et = 0.04
-        edges = [
-            pv.Cube(center=(0, hh + et/2, 0), x_length=self._pw+et*2, y_length=et, z_length=gap*1.2),
-            pv.Cube(center=(0, -hh - et/2, 0), x_length=self._pw+et*2, y_length=et, z_length=gap*1.2),
-            pv.Cube(center=(-hw - et/2, 0, 0), x_length=et, y_length=self._ph, z_length=gap*1.2),
-            pv.Cube(center=(hw + et/2, 0, 0), x_length=et, y_length=self._ph, z_length=gap*1.2),
-        ]
-        for i, e in enumerate(edges):
-            p.add_mesh(e, color=edge_color, name=f"edge_{i}", opacity=0.85, smooth_shading=True)
+        # White opaque border around the panel
+        margin = 0.25
+        border_w = self._pw + margin * 2
+        border_h = self._ph + margin * 2
+        border_z = gap * 1.3
 
+        borders = [
+            # Top border
+            pv.Cube(center=(0, self._ph/2 + margin/2, 0),
+                    x_length=border_w, y_length=margin, z_length=border_z),
+            # Bottom border
+            pv.Cube(center=(0, -self._ph/2 - margin/2, 0),
+                    x_length=border_w, y_length=margin, z_length=border_z),
+            # Left border
+            pv.Cube(center=(-self._pw/2 - margin/2, 0, 0),
+                    x_length=margin, y_length=self._ph, z_length=border_z),
+            # Right border
+            pv.Cube(center=(self._pw/2 + margin/2, 0, 0),
+                    x_length=margin, y_length=self._ph, z_length=border_z),
+        ]
+        for i, b in enumerate(borders):
+            p.add_mesh(b, color="#ffffff", name=f"border_{i}", opacity=1.0, smooth_shading=True)
+
+        # Inner transparent acrylic planes (same size as scatter area)
         pc = "#d0d5db" if not self._dark else "#2a2a2e"
         for name, z_pos, direction in [("front_plane", gap/2, (0,0,1)), ("back_plane", -gap/2, (0,0,-1))]:
             plane = pv.Plane(center=(0,0,z_pos), direction=direction, i_size=self._pw, j_size=self._ph, i_resolution=1, j_resolution=1)
             p.add_mesh(plane, color=pc, name=name, opacity=0.08, smooth_shading=True)
+
+        # 3D text labels on the white border area
+            self._add_labels(p, ds)
+        
 
         self._add_scatter_gt(ds, gap/2 + 0.01, prefix="front_gt")
         self._add_scatter_result(ds, -gap/2 - 0.01, ds.has_pred)
@@ -249,6 +266,21 @@ class Overlay3DViewWidget(QWidget):
         p.add_key_event("o", lambda: self._cmd_overlay(not self._overlay_on))
         p.add_key_event("r", lambda: self._cmd_rotate90())
         p.add_key_event("escape", lambda: self._cmd_reset())
+
+
+    def _add_labels(self, p, ds):
+        """Add screen-space text labels for GT and Result faces."""
+        sid = ds.section_id
+        p.add_text(
+            f"Ground Truth  [{sid}]",
+            position="upper_left", font_size=11, color="#333333",
+            font="arial", shadow=False,
+        )
+        p.add_text(
+            f"Result  [{sid}]",
+            position="upper_right", font_size=11, color="#888888",
+            font="arial", shadow=False,
+        )
 
     def _add_scatter_gt(self, ds, z, prefix="gt"):
         p = self._plotter
