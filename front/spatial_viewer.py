@@ -192,6 +192,7 @@ CLUSTER_COLORS = {
     "Layer1": "#5DADE2", "Layer2": "#2E86C1", "Layer3": "#2874A6",
     "Layer4": "#1F618D", "Layer5": "#1A5276", "Layer6": "#154360",
     "WM":     "#5D6D7E",
+    "ERR_POSITION": "#FF1A1A", "ERR_LABEL": "#FF5A1A",
 }
 _FALLBACK = ["#008B8B","#008080","#0E6655","#1E90FF","#7B68EE","#6A5ACD",
              "#483D8B","#4B0082","#8E44AD","#1ABC9C","#117A65","#191970"]
@@ -234,6 +235,7 @@ class SpatialViewerWidget(QWidget):
         self._boundary_actors = []
         self._hover_observer_id = None
         self._results_dataset: Optional[SpatialDataset] = None
+        self._view_side: str = "front"  # front or back
 
         self._pw = 4.0
         self._ph = 3.0
@@ -312,8 +314,8 @@ class SpatialViewerWidget(QWidget):
         self._dataset = dataset
         # Auto-try loading results if not provided
         if results_dataset is None:
-            results_root = Path(__file__).resolve().parent.parent / "results" / "DLPFC"
-            results_dataset = load_spatial_dataset(str(results_root), dataset.section_id, gt_column="layer_guess_reordered")
+            results_root = Path(__file__).resolve().parent.parent / "results"
+            results_dataset = load_spatial_dataset(str(results_root), dataset.section_id)
         self._results_dataset = results_dataset
         self._hovered_cluster = None
         self._clear_boundaries()
@@ -355,27 +357,42 @@ class SpatialViewerWidget(QWidget):
         # ---- Front layer: Results (or GT fallback) ----
         res_ds = self._results_dataset if self._results_dataset is not None else ds
         n_res = len(res_ds.cells)
+
+        # Build full results point cloud
         pts_res = np.zeros((n_res, 3), dtype=np.float32)
         colors_res = np.zeros((n_res, 3), dtype=np.float32)
+        # Override cluster labels for error points
+        res_clusters = {}  # cluster_name -> list of indices (for hover linkage)
+        error_extra_indices = set()
+        error_label_indices = set()
 
         if self._results_dataset is not None and self._results_dataset is not ds:
-            # Compare results vs GT: mark mismatches
             gt_pos_set = {(c.x, c.y) for c in ds.cells}
             gt_label_map = {(c.x, c.y): c.cluster for c in ds.cells}
+
             for i, cell in enumerate(res_ds.cells):
                 pts_res[i] = [cell.x, cell.y, z_res]
                 pos_key = (cell.x, cell.y)
                 if pos_key not in gt_pos_set:
-                    colors_res[i] = (1.0, 0.1, 0.1)      # bright red: extra point
+                    colors_res[i] = (1.0, 0.1, 0.1)
+                    error_extra_indices.add(i)
+                    res_clusters.setdefault("ERR_POSITION", []).append(i)
                 elif gt_label_map.get(pos_key) != cell.cluster:
-                    colors_res[i] = (1.0, 0.35, 0.1)     # orange-red: label mismatch
+                    colors_res[i] = (1.0, 0.35, 0.1)
+                    error_label_indices.add(i)
+                    res_clusters.setdefault("ERR_LABEL", []).append(i)
                 else:
                     colors_res[i] = get_cluster_color(cell.cluster)
+                    res_clusters.setdefault(cell.cluster, []).append(i)
         else:
-            # No results: GT on both sides
             for i, cell in enumerate(res_ds.cells):
                 pts_res[i] = [cell.x, cell.y, z_res]
                 colors_res[i] = get_cluster_color(cell.cluster)
+                res_clusters.setdefault(cell.cluster, []).append(i)
+
+        # Store cluster mapping and original colors for hover
+        self._res_clusters = res_clusters
+        self._res_colors_original = colors_res.copy()
 
         pdata_res = pv.PolyData(pts_res)
         pdata_res["colors"] = colors_res
@@ -384,6 +401,29 @@ class SpatialViewerWidget(QWidget):
             point_size=10, render_points_as_spheres=True,
             opacity=0.75, lighting=False, name="cell_points_res",
         )
+
+        # Error overlay markers (opaque, visual only)
+        if error_extra_indices:
+            ee_pts = np.array([[res_ds.cells[i].x, res_ds.cells[i].y, z_res + 0.025] for i in error_extra_indices], dtype=np.float32)
+            ee_colors = np.full((len(error_extra_indices), 3), (1.0, 0.1, 0.1), dtype=np.float32)
+            pdata_ee = pv.PolyData(ee_pts)
+            pdata_ee["colors"] = ee_colors
+            p.add_mesh(
+                pdata_ee, scalars="colors", rgb=True,
+                point_size=12, render_points_as_spheres=True,
+                opacity=1.0, lighting=False, name="cell_points_res_err_extra",
+            )
+
+        if error_label_indices:
+            el_pts = np.array([[res_ds.cells[i].x, res_ds.cells[i].y, z_res + 0.025] for i in error_label_indices], dtype=np.float32)
+            el_colors = np.full((len(error_label_indices), 3), (1.0, 0.35, 0.1), dtype=np.float32)
+            pdata_el = pv.PolyData(el_pts)
+            pdata_el["colors"] = el_colors
+            p.add_mesh(
+                pdata_el, scalars="colors", rgb=True,
+                point_size=12, render_points_as_spheres=True,
+                opacity=1.0, lighting=False, name="cell_points_res_err_label",
+            )
 
     def _update_labels(self):
         p = self._plotter
@@ -478,79 +518,121 @@ class SpatialViewerWidget(QWidget):
             if pid < 0:
                 return
 
-            # Determine which dataset was picked by checking the actual dataset
-            target_ds = self._dataset  # default: GT
+            side = self._view_side
+            p = self._plotter
+
+            # Determine which layer was picked
+            picked_layer = None  # "gt" or "res"
             try:
                 picked_ds = self._picker.GetDataSet()
                 if picked_ds is not None:
-                    p = self._plotter
                     for name in ("cell_points_res", "cell_points_res_hl"):
                         actor = p.actors.get(name)
                         if actor is not None:
                             try:
                                 if actor.GetMapper().GetInput() is picked_ds:
-                                    target_ds = self._results_dataset if self._results_dataset is not None else self._dataset
+                                    picked_layer = "res"
                                     break
                             except:
                                 continue
+                    if picked_layer is None:
+                        for name in ("cell_points_gt", "cell_points_gt_hl"):
+                            actor = p.actors.get(name)
+                            if actor is not None:
+                                try:
+                                    if actor.GetMapper().GetInput() is picked_ds:
+                                        picked_layer = "gt"
+                                        break
+                                except:
+                                    continue
             except:
                 pass
 
+            # Enforce view side
+            if side == "front" and picked_layer == "gt":
+                return  # front view, ignore GT picks
+            if side == "back" and picked_layer == "res":
+                return  # back view, ignore results picks
+
+            # Select target dataset based on picked layer
+            if picked_layer == "res":
+                target_ds = self._results_dataset if self._results_dataset is not None else self._dataset
+                layer_name = "Results"
+            else:
+                target_ds = self._dataset
+                layer_name = "Ground Truth"
+
             if 0 <= pid < len(target_ds.cells):
-                cluster = target_ds.cells[pid].cluster
+                if picked_layer == "res" and self._results_dataset is not None:
+                    r_clusters = getattr(self, "_res_clusters", target_ds.clusters)
+                    cluster = target_ds.cells[pid].cluster
+                    for cname, indices in r_clusters.items():
+                        if pid in indices:
+                            cluster = cname
+                            break
+                else:
+                    cluster = target_ds.cells[pid].cluster
+
+                self._hovered_layer = layer_name
                 if cluster != self._hovered_cluster:
                     self._hovered_cluster = cluster
-                    self._highlight_cluster(cluster)
+                    self._highlight_cluster(cluster, layer_name)
         except:
             pass
 
-    def _highlight_cluster(self, cluster: str):
-        """Dim non-matching cells (small+transparent), enlarge matching cells (big+opaque)."""
+    def _highlight_cluster(self, cluster: str, layer_name: str = "Ground Truth"):
+        """Highlight cluster on the specified layer only (GT or Results)."""
         if self._dataset is None:
             return
         ds = self._dataset
         p = self._plotter
-
-        indices = set(ds.clusters.get(cluster, []))
-        n = len(ds.cells)
         dim_color = (0.82, 0.82, 0.82)
 
-        # ---- GT Layer: dim all, then overlay highlight ----
-        gt_colors = np.zeros((n, 3), dtype=np.float32)
-        for i, cell in enumerate(ds.cells):
-            gt_colors[i] = dim_color
-        try:
-            actor = p.actors["cell_points_gt"]
-            actor.GetProperty().SetPointSize(5)
-            actor.GetProperty().SetOpacity(0.30)
-            pdata = actor.GetMapper().GetInput()
-            pdata["colors"] = gt_colors
-            actor.GetMapper().Modified()
-        except:
-            pass
+        highlight_gt = (layer_name == "Ground Truth")
+        highlight_res = (layer_name == "Results")
 
-        # Create highlight points for GT layer
-        if indices:
-            gt_highlight_pts = np.array([[ds.cells[i].x, ds.cells[i].y, self._gap/2 + 0.015] for i in indices])
-            gt_highlight_colors = np.array([get_cluster_color(ds.cells[i].cluster) for i in indices])
-            gt_hl_pdata = pv.PolyData(gt_highlight_pts)
-            gt_hl_pdata["colors"] = gt_highlight_colors
+        # ---- GT Layer ----
+        if highlight_gt:
+            indices = set(ds.clusters.get(cluster, []))
+            n = len(ds.cells)
+            gt_colors = np.zeros((n, 3), dtype=np.float32)
+            for i, cell in enumerate(ds.cells):
+                gt_colors[i] = dim_color
+            try:
+                actor = p.actors["cell_points_gt"]
+                actor.GetProperty().SetPointSize(5)
+                actor.GetProperty().SetOpacity(0.30)
+                pdata = actor.GetMapper().GetInput()
+                pdata["colors"] = gt_colors
+                actor.GetMapper().Modified()
+            except:
+                pass
             for name in list(p.actors.keys()):
                 if name.startswith("cell_points_gt_hl"):
                     p.remove_actor(name)
-            p.add_mesh(
-                gt_hl_pdata, scalars="colors", rgb=True,
-                point_size=28, render_points_as_spheres=True,
-                opacity=1.0, lighting=False, name="cell_points_gt_hl",
-            )
+            if indices:
+                gt_hl_pts = np.array([[ds.cells[i].x, ds.cells[i].y, -self._gap/2 - 0.015] for i in indices], dtype=np.float32)
+                gt_hl_colors = np.array([get_cluster_color(ds.cells[i].cluster) for i in indices], dtype=np.float32)
+                gt_hl_pdata = pv.PolyData(gt_hl_pts)
+                gt_hl_pdata["colors"] = gt_hl_colors
+                p.add_mesh(
+                    gt_hl_pdata, scalars="colors", rgb=True,
+                    point_size=28, render_points_as_spheres=True,
+                    opacity=1.0, lighting=False, name="cell_points_gt_hl",
+                )
+            gt_indices = indices
+        else:
+            self._restore_gt_base()
+            gt_indices = set()
 
         # ---- Results Layer ----
-        res_ds = self._results_dataset
-        if res_ds is not None and res_ds is not ds:
-            r_indices = set(res_ds.clusters.get(cluster, []))
+        if highlight_res:
+            res_ds = self._results_dataset if self._results_dataset is not None else ds
+            r_clusters = getattr(self, "_res_clusters", res_ds.clusters)
+            r_indices = set(r_clusters.get(cluster, []))
             rn = len(res_ds.cells)
             res_colors = np.zeros((rn, 3), dtype=np.float32)
-            for i, cell in enumerate(res_ds.cells):
+            for i in range(rn):
                 res_colors[i] = dim_color
             try:
                 actor = p.actors["cell_points_res"]
@@ -561,108 +643,128 @@ class SpatialViewerWidget(QWidget):
                 actor.GetMapper().Modified()
             except:
                 pass
+            for name in list(p.actors.keys()):
+                if name.startswith("cell_points_res_hl"):
+                    p.remove_actor(name)
             if r_indices:
                 z_res = self._gap / 2 + 0.015
-                res_hl_pts = np.array([[res_ds.cells[i].x, res_ds.cells[i].y, z_res] for i in r_indices])
-                res_hl_colors = np.array([get_cluster_color(res_ds.cells[i].cluster) for i in r_indices])
+                res_hl_pts = np.array([[res_ds.cells[i].x, res_ds.cells[i].y, z_res] for i in r_indices], dtype=np.float32)
+                res_hl_colors = np.array([get_cluster_color(res_ds.cells[i].cluster) for i in r_indices], dtype=np.float32)
                 res_hl_pdata = pv.PolyData(res_hl_pts)
                 res_hl_pdata["colors"] = res_hl_colors
-                for name in list(p.actors.keys()):
-                    if name.startswith("cell_points_res_hl"):
-                        p.remove_actor(name)
                 p.add_mesh(
                     res_hl_pdata, scalars="colors", rgb=True,
                     point_size=28, render_points_as_spheres=True,
                     opacity=1.0, lighting=False, name="cell_points_res_hl",
                 )
+            for err_name in ("cell_points_res_err_extra", "cell_points_res_err_label"):
+                try:
+                    e_actor = p.actors.get(err_name)
+                    if e_actor is not None:
+                        e_actor.GetProperty().SetPointSize(6)
+                        e_actor.GetProperty().SetOpacity(0.25)
+                except:
+                    pass
         else:
-            # Both sides same: dim Res layer too
-            try:
-                actor = p.actors["cell_points_res"]
-                actor.GetProperty().SetPointSize(5)
-                actor.GetProperty().SetOpacity(0.30)
-                pdata = actor.GetMapper().GetInput()
-                pdata["colors"] = gt_colors
-                actor.GetMapper().Modified()
-            except:
-                pass
-            # Reuse GT highlight for Res side
-            if indices:
-                z_res = self._gap / 2 + 0.015
-                res_hl_pts = np.array([[ds.cells[i].x, ds.cells[i].y, z_res] for i in indices])
-                res_hl_colors = np.array([get_cluster_color(ds.cells[i].cluster) for i in indices])
-                res_hl_pdata = pv.PolyData(res_hl_pts)
-                res_hl_pdata["colors"] = res_hl_colors
-                for name in list(p.actors.keys()):
-                    if name.startswith("cell_points_res_hl"):
-                        p.remove_actor(name)
-                p.add_mesh(
-                    res_hl_pdata, scalars="colors", rgb=True,
-                    point_size=28, render_points_as_spheres=True,
-                    opacity=1.0, lighting=False, name="cell_points_res_hl",
-                )
+            self._restore_results_base()
 
         self._clear_boundaries()
-        if indices:
-            cluster_pts = np.array([[ds.cells[i].x, ds.cells[i].y] for i in indices])
+        if highlight_gt and gt_indices:
+            cluster_pts = np.array([[ds.cells[i].x, ds.cells[i].y] for i in gt_indices])
             self._add_boundaries(cluster_pts, cluster)
+        elif highlight_res:
+            r_clusters2 = getattr(self, "_res_clusters", {})
+            r_idx2 = r_clusters2.get(cluster, [])
+            if r_idx2:
+                rd = self._results_dataset if self._results_dataset is not None else ds
+                cluster_pts = np.array([[rd.cells[i].x, rd.cells[i].y] for i in r_idx2])
+                self._add_boundaries(cluster_pts, cluster)
+
         self._update_cluster_info(cluster)
         p.render()
 
-    def _clear_highlight(self):
-        """Restore all cells to original colors, size, and opacity."""
-        if self._dataset is None:
-            return
-        self._hovered_cluster = None
+    def _restore_gt_base(self):
+        """Restore GT base layer to default appearance."""
         ds = self._dataset
+        if ds is None:
+            return
         n = len(ds.cells)
         colors = np.zeros((n, 3), dtype=np.float32)
         for i, cell in enumerate(ds.cells):
             colors[i] = get_cluster_color(cell.cluster)
-
-        # Restore GT layer
         try:
-            actor = self._plotter.actors["cell_points_gt"]
-            actor.GetProperty().SetPointSize(10)
-            actor.GetProperty().SetOpacity(0.75)
-            pdata = actor.GetMapper().GetInput()
-            pdata["colors"] = colors
-            actor.GetMapper().Modified()
-        except:
-            pass
-
-        # Restore results layer
-        res_ds = self._results_dataset
-        if res_ds is not None and res_ds is not ds:
-            rn = len(res_ds.cells)
-            r_colors = np.zeros((rn, 3), dtype=np.float32)
-            for i, cell in enumerate(res_ds.cells):
-                r_colors[i] = get_cluster_color(cell.cluster)
-            try:
-                actor = self._plotter.actors["cell_points_res"]
-                actor.GetProperty().SetPointSize(10)
-                actor.GetProperty().SetOpacity(0.75)
-                pdata = actor.GetMapper().GetInput()
-                pdata["colors"] = r_colors
-                actor.GetMapper().Modified()
-            except:
-                pass
-        else:
-            try:
-                actor = self._plotter.actors["cell_points_res"]
+            actor = self._plotter.actors.get("cell_points_gt")
+            if actor is not None:
                 actor.GetProperty().SetPointSize(10)
                 actor.GetProperty().SetOpacity(0.75)
                 pdata = actor.GetMapper().GetInput()
                 pdata["colors"] = colors
                 actor.GetMapper().Modified()
+        except:
+            pass
+
+    def _restore_results_base(self):
+        """Restore results base layer to default appearance."""
+        ds = self._dataset
+        if ds is None:
+            return
+        res_ds = self._results_dataset
+        if res_ds is not None and res_ds is not ds:
+            saved_colors = getattr(self, "_res_colors_original", None)
+            if saved_colors is not None and len(saved_colors) == len(res_ds.cells):
+                r_colors = saved_colors.copy()
+            else:
+                rn = len(res_ds.cells)
+                r_colors = np.zeros((rn, 3), dtype=np.float32)
+                for i, cell in enumerate(res_ds.cells):
+                    r_colors[i] = get_cluster_color(cell.cluster)
+            try:
+                actor = self._plotter.actors.get("cell_points_res")
+                if actor is not None:
+                    actor.GetProperty().SetPointSize(10)
+                    actor.GetProperty().SetOpacity(0.75)
+                    pdata = actor.GetMapper().GetInput()
+                    pdata["colors"] = r_colors
+                    actor.GetMapper().Modified()
+            except:
+                pass
+        else:
+            n = len(ds.cells)
+            colors = np.zeros((n, 3), dtype=np.float32)
+            for i, cell in enumerate(ds.cells):
+                colors[i] = get_cluster_color(cell.cluster)
+            try:
+                actor = self._plotter.actors.get("cell_points_res")
+                if actor is not None:
+                    actor.GetProperty().SetPointSize(10)
+                    actor.GetProperty().SetOpacity(0.75)
+                    pdata = actor.GetMapper().GetInput()
+                    pdata["colors"] = colors
+                    actor.GetMapper().Modified()
             except:
                 pass
 
+    def _clear_highlight(self):
+        """Restore all cells to original state."""
+        if self._dataset is None:
+            return
+        self._hovered_cluster = None
+        self._hovered_layer = None
+        self._restore_gt_base()
+        self._restore_results_base()
         # Remove highlight actors
         for name in list(self._plotter.actors.keys()):
             if name.startswith("cell_points_gt_hl") or name.startswith("cell_points_res_hl"):
                 self._plotter.remove_actor(name)
-
+        # Restore error overlay actors
+        for err_name in ("cell_points_res_err_extra", "cell_points_res_err_label"):
+            try:
+                e_actor = self._plotter.actors.get(err_name)
+                if e_actor is not None:
+                    e_actor.GetProperty().SetPointSize(12)
+                    e_actor.GetProperty().SetOpacity(1.0)
+            except:
+                pass
         self._clear_boundaries()
         self._plotter.render()
 
@@ -701,6 +803,14 @@ class SpatialViewerWidget(QWidget):
         ds = self._dataset
         if ds is None:
             return
+        layer = getattr(self, "_hovered_layer", "Ground Truth")
+        if cluster in ("ERR_POSITION", "ERR_LABEL"):
+            r_clusters = getattr(self, "_res_clusters", {})
+            indices = r_clusters.get(cluster, [])
+            count = len(indices)
+            err_type = "Position Error" if cluster == "ERR_POSITION" else "Label Mismatch"
+            self.cluster_hovered.emit(f"[{layer}] {cluster}", count, {"type": err_type, "layer": layer})
+            return
         indices = ds.clusters.get(cluster, [])
         count = len(indices)
         if indices:
@@ -708,13 +818,16 @@ class SpatialViewerWidget(QWidget):
             meta_dict = {k: str(v)[:60] for k, v in list(meta.items())[:5]}
         else:
             meta_dict = {}
-        self.cluster_hovered.emit(cluster, count, meta_dict)
+        meta_dict["layer"] = layer
+        self.cluster_hovered.emit(f"[{layer}] {cluster}", count, meta_dict)
 
     def _view_front(self):
+        self._view_side = "front"
         self._plotter.camera_position = [(0, -self._ph*0.55, self._pw*0.85), (0, 0, 0), (0, 0, 1)]
         self._plotter.render()
 
     def _view_back(self):
+        self._view_side = "back"
         self._plotter.camera_position = [(0, self._ph*0.55, -self._pw*0.85), (0, 0, 0), (0, 0, 1)]
         self._plotter.render()
 
