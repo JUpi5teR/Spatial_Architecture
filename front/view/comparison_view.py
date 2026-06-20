@@ -1,4 +1,4 @@
-"""Side-by-side image comparison view with zoom, pan, and sync."""
+﻿"""Side-by-side image comparison view with zoom, pan, and sync."""
 from __future__ import annotations
 from typing import Optional
 
@@ -23,7 +23,7 @@ from utils.logger import logger
 # ---- Theme styles ----
 
 _IMAGE_BG_DARK = "#1a1a1e"
-_IMAGE_BG_LIGHT = "#ececec"
+_IMAGE_BG_LIGHT = "#f0f0f3"
 
 _TITLE_DARK = (
     "font-weight: bold; font-size: 13px; color: #d0d0d5; padding: 2px 8px;"
@@ -33,7 +33,7 @@ _TITLE_LIGHT = (
 )
 
 _SCROLL_DARK = "background-color: #1a1a1e; border: none;"
-_SCROLL_LIGHT = "background-color: #ececec; border: none;"
+_SCROLL_LIGHT = "background-color: #f0f0f3; border: none;"
 
 _BTN_DARK = (
     "QPushButton { font-size: 12px; padding: 2px 12px; "
@@ -286,6 +286,8 @@ class ComparisonViewWidget(QWidget):
 
     def update_theme(self, dark: bool) -> None:
         self._dark = dark
+        bg = _IMAGE_BG_DARK if dark else _IMAGE_BG_LIGHT
+        self.setStyleSheet(f"ComparisonViewWidget {{ background-color: {bg}; }}")
         self._sync_btn.setStyleSheet(_BTN_DARK if dark else _BTN_LIGHT)
         self._no_data_label.setStyleSheet(
             _NO_DATA_DARK if dark else _NO_DATA_LIGHT

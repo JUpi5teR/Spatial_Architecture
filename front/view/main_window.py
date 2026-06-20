@@ -545,6 +545,7 @@ class MainWindow(QMainWindow):
             "color: #f5b04a; font-size: 11px;" if dark else
             "color: #ad6800; font-size: 11px;"
         )
+        self._comparison_widget.update_theme(dark)
 
     # ================================================================
     #  Sidebar module selection
