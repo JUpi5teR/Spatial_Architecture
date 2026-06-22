@@ -20,6 +20,7 @@ reference/
 dataset/
 resultstrue/
 results/
+.codex/
 
 # 私人配置与密钥
 config/personal.json
@@ -40,3 +41,4 @@ _fix_bg3.py
 _fix_panel.py
 _integrate.py
 _write_heatmap.py
+_patch_theme_init.py
