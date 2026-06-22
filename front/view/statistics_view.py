@@ -1,0 +1,182 @@
+# coding: utf-8
+"""Statistics 页面 —— 展示每个样本的聚类评价指标柱状图。
+
+指标: ARI, NMI, HS, CS
+展示: 每个样本一组柱子 + 全局 Mean / Median
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget, QComboBox,
+)
+
+from model.data_path import DataPathManager, TRAIN_LOG_METRICS
+from utils.logger import logger
+
+
+class StatisticsViewWidget(QWidget):
+    """Bar-chart view of clustering metrics per sample.
+
+    Reads from train_log/ CSV files; displays one metric at a time.
+    """
+
+    def __init__(self, path_mgr: DataPathManager, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._mgr = path_mgr
+        self._canvas: Optional[FigureCanvasQTAgg] = None
+        self._figure: Optional[Figure] = None
+        self._metric_combo: Optional[QComboBox] = None
+        self._metric = "ari"
+        self._loaded = False
+
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root_ly = QVBoxLayout(self)
+        root_ly.setContentsMargins(40, 34, 40, 34)
+        root_ly.setSpacing(12)
+
+        title = QLabel("\u2261  Statistics")
+        title.setStyleSheet("font-size: 24px; font-weight: 800; color: #1a1a1a;")
+        root_ly.addWidget(title)
+
+        # metric selector
+        sel_row = QHBoxLayout()
+        sel_row.addWidget(QLabel("选择指标: "))
+        self._metric_combo = QComboBox()
+        self._metric_combo.setFixedWidth(140)
+        self._metric_combo.setStyleSheet(
+            "QComboBox { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 4px 8px; }"
+        )
+        self._metric_combo.currentTextChanged.connect(self._on_metric_changed)
+        sel_row.addWidget(self._metric_combo)
+        sel_row.addStretch()
+        root_ly.addLayout(sel_row)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("background: #ececec; max-height: 1px; min-height: 1px;")
+        root_ly.addWidget(sep)
+
+        # canvas
+        self._figure = Figure(figsize=(9, 5), dpi=100)
+        self._canvas = FigureCanvasQTAgg(self._figure)
+        self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        root_ly.addWidget(self._canvas, 1)
+
+    def load_data(self) -> None:
+        """Scan train_log, populate metric selector, draw first metric."""
+        if not self._mgr.has_valid_data():
+            self._draw_placeholder("\u26A0  请先上传数据文件夹 (Upload Data)")
+            self._loaded = False
+            return
+
+        structure = self._mgr.structure()
+        if structure is None or not structure.has_train_log or not structure.train_log_metrics:
+            self._draw_placeholder("\u2139  train_log 未找到，暂无统计数据显示")
+            self._loaded = False
+            return
+
+        metrics = structure.train_log_metrics
+        # Populate combo
+        self._metric_combo.blockSignals(True)
+        self._metric_combo.clear()
+        for m in metrics:
+            self._metric_combo.addItem(m.upper())
+        self._metric_combo.blockSignals(False)
+
+        self._loaded = True
+        self._metric = metrics[0].lower()
+        if self._metric_combo.count() > 0:
+            self._metric_combo.setCurrentIndex(0)
+        self._draw()
+
+    def _on_metric_changed(self, text: str) -> None:
+        if not self._loaded:
+            return
+        self._metric = text.strip().lower()
+        self._draw()
+
+    # ----------------------------------------------------------------
+    # Chart drawing
+    # ----------------------------------------------------------------
+    def _draw(self) -> None:
+        structure = self._mgr.structure()
+        if structure is None or not structure.has_train_log:
+            self._draw_placeholder("\u2139  train_log 未找到")
+            return
+
+        csv_path = structure.train_log_dir / f"{self._metric}.csv"
+        if not csv_path.is_file():
+            self._draw_placeholder(f"\u26A0  文件不存在: {csv_path}")
+            return
+
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as exc:
+            logger.error("Failed to read %s: %s", csv_path, exc)
+            self._draw_placeholder(f"\u274C  读取失败: {exc}")
+            return
+
+        if df.empty:
+            self._draw_placeholder("\u2139  CSV 文件为空")
+            return
+
+        last_row = df.iloc[-1]
+        sample_cols = [c for c in df.columns if c.lower().strip() not in ("epoch",)]
+        if not sample_cols:
+            self._draw_placeholder("\u26A0  CSV 中无样本列")
+            return
+
+        values = []
+        labels = []
+        for col in sample_cols:
+            try:
+                v = float(last_row[col])
+            except (ValueError, TypeError):
+                v = np.nan
+            values.append(v)
+            labels.append(str(col))
+
+        values_arr = np.array(values, dtype=float)
+        valid = ~np.isnan(values_arr)
+        mean_val = np.mean(values_arr[valid]) if valid.any() else 0.0
+        median_val = np.median(values_arr[valid]) if valid.any() else 0.0
+
+        self._figure.clear()
+        ax = self._figure.add_subplot(111)
+
+        x = np.arange(len(labels))
+        width = 0.6
+        bars = ax.bar(x, values_arr, width, color="#5b8fd9", edgecolor="#3a6fb5", linewidth=0.5)
+
+        ax.axhline(y=mean_val, color="#e74c3c", linestyle="--", linewidth=1.5, label=f"Mean = {mean_val:.4f}")
+        ax.axhline(y=median_val, color="#f39c12", linestyle=":", linewidth=1.5, label=f"Median = {median_val:.4f}")
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
+        ax.set_ylabel(self._metric.upper(), fontsize=12)
+        ax.set_title(f"每个样本的 {self._metric.upper()} 指标 (最后一轮)", fontsize=14, fontweight="bold")
+        ax.legend(fontsize=10)
+        ax.grid(axis="y", alpha=0.3)
+        self._figure.tight_layout()
+        self._canvas.draw()
+
+    def _draw_placeholder(self, message: str) -> None:
+        self._figure.clear()
+        ax = self._figure.add_subplot(111)
+        ax.text(0.5, 0.5, message, transform=ax.transAxes, ha="center", va="center",
+                fontsize=16, color="#888")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        self._figure.tight_layout()
+        self._canvas.draw()

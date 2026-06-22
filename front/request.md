@@ -1,104 +1,354 @@
-ClustroView 聚类对比页面 - 完整 UI 与实现需求
-一、整体界面描述（最终版）
-这是 ClustroView 平台的「聚类对比分析（Clustering Comparison）」页面，服务于单细胞测序数据的真实标注与模型预测结果对比。整体采用浅色系极简 B 端设计，主色调为白色背景 + 深灰文字 + 低饱和品牌辅助色，关键数据用高饱和色高亮，信息层级清晰，支持专业用户快速定位差异。
-1. 页面整体布局
-保持「左侧固定导航栏 + 右侧主内容区」的经典结构：
-左侧导航栏：包含平台所有模块入口，当前高亮 ANALYSIS > Clustering，图标 + 文字垂直排列，交互清晰。
-右侧主内容区：从上到下分为「顶部标题与数据集选择区」「视图模式切换区」「核心对比可视化区」「数据详情标签页区」四大模块，信息层级递进。
-2. 各模块详细描述
-（1）顶部标题与数据集区
-左侧：主标题 Clustering Comparison（加粗大号字体），副标题 Compare ground truth vs prediction results（浅灰色小号辅助文字）。
-右侧：数据集下拉选择器，显示当前分析的数据集（如 PBMC_10k_v2），支持切换不同数据集，切换后刷新全页面数据与视图。
-（2）视图模式切换区（新增核心控件）
-在可视化区上方新增一组切换按钮，支持两种对比模式一键切换：
-表格
-按钮	模式名称	状态说明
-Side-by-Side View	平行面板模式	选中时，核心可视化区显示左右两个独立面板
-3D Flip View	单 3D 翻页模式	选中时，核心可视化区显示单个 3D 透明面板，支持正反面切换
-（3）核心对比可视化区（重构核心模块）
-模式 1：平行面板模式（Side-by-Side View）
-布局：左右两个等宽独立面板，中间以浅灰分隔线区分，面板内均为散点图视图。
-左侧面板：标注 Ground Truth (Annotated Labels)，固定展示真实标注的聚类散点，使用低饱和配色区分不同细胞亚群，颜色与真实聚类一一对应。
-右侧面板：标注 Prediction (Model Results)，展示模型预测的散点，颜色遵循以下规则：
-与真实标注完全匹配的点：使用与左侧面板完全一致的低饱和颜色。
-模型新增的点（真实标注中不存在）：高饱和红色。
-位置匹配但分类错误的点：高饱和黄色。
-真实标注中存在但模型未预测到的点：在右侧面板以高饱和橙色标注（可叠加在预测视图上，或单独图层展示）。
-交互支持：
-两个面板可独立拖拽旋转、滚轮缩放；也支持「同步视角」按钮，一键让两个面板保持相同的旋转 / 缩放状态。
-每个面板支持单独的重置视图、切换显示类型（2D/3D）操作。
-模式 2：单 3D 翻页模式（3D Flip View，重构版）
-主体：单个透明 3D 面板，支持前后翻页切换，两页数据完全独立、互不干扰：
-面板正面：展示Prediction 结果散点，颜色规则与平行面板模式的右侧面板完全一致（匹配点低饱和色、新增点红色、错分类点黄色、漏检点橙色）。
-面板背面：固定展示Ground Truth 真实标注散点，使用低饱和配色，无高亮色，不受预测结果影响。
-交互控件（右侧悬浮栏，更新后）：
-表格
-控件	功能说明	快捷键
-Flip Panel	切换面板正反面（正面 / 背面）	F
-Rotate 90°	将当前视图顺时针旋转 90°	R
-Overlay View	一键叠加正反面视图，半透明展示便于对比	O
-Reset View	恢复视图默认旋转、缩放、翻页状态	-
-误差统计卡片（悬浮于控件栏下方）：
-标题 Mismatched Points，显示三类误差的汇总数据：
-新增点：红色标注数量与占比
-错分类点：黄色标注数量与占比
-漏检点：橙色标注数量与占比
-总不匹配数：合计数量与占比（如 1,248 (5.76%)）
-补充数据：Total Points 21,654，带 View Details → 跳转链接，点击进入误差详情页。
-降级处理：当预测结果散点信息缺失时，自动降级为「双 Ground Truth 视图」，即面板正反面均展示真实标注散点，同时在页面顶部显示浅橙色提示条：预测结果数据缺失，当前展示仅真实标注数据。
-（4）数据详情标签页区（兼容原设计，补充误差字段）
-标签栏：保留 Data Summary、Cluster Summary、Confusion Matrix、Mismatched Points、Cluster Details 五个标签，默认选中 Cluster Summary。
-左侧 Data Summary 卡片：
-新增误差汇总指标：新增点数量、错分类点数量、漏检点数量、整体匹配率（Agreement），关键数据用对应颜色高亮。
-右侧 Cluster Summary 表格：
-列字段补充：新增点数量、错分类点数量、漏检点数量，分别用红、黄、橙三色高亮。
-保留原有的 Cluster ID (True)、Cluster Name、# Cells (True)、Cluster ID (Pred)、# Cells (Pred)、Agreement、Mismatched 字段，匹配率≥90% 用绿色高亮。
-操作按钮：表格右上角保留 Download 按钮（支持导出表格为 CSV/Excel）和更多操作菜单。
-二、完整实现需求（可直接交付开发）
-1. 业务目标
-实现单细胞聚类结果的多模式对比，通过平行面板和单 3D 翻页两种视图，清晰区分「匹配点、新增点、错分类点、漏检点」四类数据，支持交互式对比与量化分析，同时兼容预测数据缺失的降级场景。
-2. 核心功能需求
-2.1 视图模式切换
-页面顶部提供「平行面板模式 / 单 3D 翻页模式」切换控件，支持用户一键切换。
-切换时需保存当前视图的缩放、旋转状态，避免用户重复操作。
-2.2 平行面板模式实现
-面板布局：左右两个等宽独立面板，左侧固定为 Ground Truth，右侧固定为 Prediction。
-散点渲染规则：
-Ground Truth 面板：所有点使用低饱和配色，颜色与聚类 ID 一一对应，无特殊高亮。
-Prediction 面板：
-匹配点：使用与 Ground Truth 完全一致的低饱和颜色。
-新增点（Pred 有、GT 无）：高饱和红色（#ff4d4f）。
-错分类点（位置匹配、分类不同）：高饱和黄色（#faad14）。
-漏检点（GT 有、Pred 无）：高饱和橙色（#ff7a45），可通过半透明图层叠加在 Pred 面板上，或单独显示。
-交互能力：
-每个面板支持独立拖拽旋转、滚轮缩放、重置视图。
-提供「同步视角」开关，开启后两个面板的旋转、缩放状态完全同步。
-2.3 单 3D 翻页模式实现
-面板逻辑：单个 3D 透明面板，正反面数据独立，互不干扰：
-正面：Prediction 结果散点，颜色规则与平行面板的 Prediction 面板完全一致。
-背面：固定展示 Ground Truth 散点，低饱和配色，无特殊高亮。
-交互控件：
-Flip Panel 按钮 / 快捷键 F：切换面板正反面，切换时保持当前视角不变。
-Overlay View 按钮 / 快捷键 O：将正反面视图半透明叠加，便于对比同一空间位置的差异。
-Rotate 90° 按钮 / 快捷键 R：旋转当前视图。
-Reset View 按钮：恢复视图初始状态。
-降级逻辑：当 Prediction 数据缺失时，自动将面板正反面均设置为 Ground Truth 散点，同时显示顶部提示条。
-2.4 误差统计与详情
-可视化区右侧悬浮误差统计卡片，汇总三类误差的数量与占比，颜色与散点颜色对应。
-点击 View Details 跳转至 Mismatched Points 标签页，展示所有误差点的明细列表，支持按误差类型筛选。
-2.5 数据详情标签页
-保留原有的 Data Summary、Cluster Summary、Confusion Matrix、Cluster Details 标签页。
-补充误差相关字段：在 Data Summary 中新增三类误差的汇总指标，在 Cluster Summary 表格中新增每类误差的单聚类统计。
-表格支持导出为 CSV/Excel 格式，保留筛选、排序功能。
-3. 视觉与交互规范
-整体风格：浅色极简 B 端设计，背景色 #FFFFFF，文字主色 #333333，辅助色 #666666，品牌色为蓝色（用于高亮匹配率、关键数据）。
-颜色规范：
-匹配点：低饱和色（如蓝色 #69b1ff、绿色 #52c41a 等），与聚类 ID 一一对应。
-新增点：高饱和红色 #ff4d4f。
-错分类点：高饱和黄色 #faad14。
-漏检点：高饱和橙色 #ff7a45。
-交互反馈：
-按钮 hover 时背景色加深，选中状态有浅灰色背景高亮。
-散点 hover 时显示 Tooltip，包含点的 ID、真实分类、预测分类、误差类型。
-表格行 hover 高亮，支持按误差类型筛选。
-响应式适配：适配不同屏幕宽度，可视化区自适应缩放，表格在小屏时支持横向滚动。
+Project Architecture Upgrade: Convert into Notebook-based Workspace
+
+基于当前已有项目进行 架构升级，不是重构已有功能。
+
+目标：
+
+将整个系统改造成类似 NotebookLM + CVAT 的结构：
+
+顶层为 Homepage（Notebook 管理层）
+每个 Notebook 是独立工作空间（Workspace）
+原本所有功能（Upload Data / Clustering / Statistics / Plots / Heatmap）都移动到 Notebook 内部
+
+原则：
+
+保持已有功能逻辑不变
+改变整体组织结构
+增加数据库持久化
+1. Global Structure Upgrade
+
+原结构：
+
+App
+├── Upload Data
+├── Clustering
+├── Statistics
+├── Plots
+├── Heatmap
+
+升级为：
+
+App
+├── Homepage
+│   ├── Notebook List
+│   ├── Database Panel
+│   ├── Create Notebook
+│   └── Trash
+│
+└── Notebook Workspace
+    ├── Upload Data
+    ├── Clustering
+    ├── Statistics
+    ├── Plots
+    └── Heatmap
+2. Homepage（新的根页面）
+
+Homepage 作为入口页面。
+
+特点：
+
+没有左侧 sidebar
+展示所有 Notebook 记录
+类似 NotebookLM 的 notebook 卡片布局
+
+展示内容：
+
+每个 Notebook 卡片：
+
+notebook name
+create time
+last modified time
+dataset count
+preview image（如果存在）
+
+支持：
+
+点击进入 notebook
+重命名 notebook
+删除 notebook（进入 Trash）
+
+新增：
+
+Create Notebook Button
+
+功能：
+
+新建 notebook：
+
+默认：
+
+Notebook_{timestamp}
+
+创建后：
+
+自动进入 notebook 内部：
+
+default page = Upload Data
+3. Notebook Workspace（原功能整体迁移）
+
+原有：
+
+Upload Data
+Clustering
+Statistics
+Plots
+Heatmap
+
+全部作为 notebook 内部功能。
+
+现在逻辑变为：
+
+Homepage
+   ↓
+Notebook
+   ↓
+Upload Data
+   ↓
+Clustering
+   ↓
+Statistics
+   ↓
+Plots
+
+Upload Data
+   ↓
+Heatmap
+
+新增：
+
+点击：
+
+Homepage
+
+返回：
+
+Homepage notebook list
+4. Upload Data（改为 notebook scoped）
+
+现在每个 notebook 拥有独立 data。
+
+即：
+
+原来：
+
+global app data
+
+改为：
+
+notebook-local data
+
+每个 notebook 的上传数据绑定到 notebook id。
+
+要求：
+
+支持：
+
+folder upload
+zip upload
+auto unzip
+
+保留：
+
+File Structure Guide
+
+上传后：
+
+写入数据库。
+
+5. Database System（新增核心模块）
+
+新增独立 Database 页面（在 Homepage 内展示）。
+
+数据库使用：
+
+PostgreSQL
+
+用途：
+
+记录所有 notebook 和 notebook 中的数据上传记录。
+
+数据库设计：
+
+Table: notebooks
+id
+name
+created_at
+updated_at
+status
+deleted_at
+Table: datasets
+id
+notebook_id
+name
+upload_time
+file_path
+preview_image
+ground_truth_path
+results_path
+train_log_path
+status
+
+默认：
+
+name = upload_timestamp
+6. Database Panel（Homepage 中展示）
+
+新增 Database 面板。
+
+功能：
+
+展示所有上传记录（datasets）：
+
+内容：
+
+dataset name
+notebook name
+upload time
+file path
+
+支持：
+
+Select dataset
+
+功能：
+
+点击后：
+
+加载该 dataset
+打开所属 notebook
+展示内容
+
+支持：
+
+CRUD
+
+数据库中的 data 可：
+
+Create（上传新增）
+Read（查看）
+Update（重命名/替换）
+Delete（删除）
+
+注意：
+
+这里操作的是：
+
+upload record
+
+不是原始文件本身。
+
+7. Trash System
+
+Homepage 左下角固定：
+
+Trash icon
+
+功能：
+
+回收：
+
+deleted notebooks
+
+行为：
+
+删除 notebook：
+
+不是立即删除：
+
+move to trash
+
+Trash 支持：
+
+restore
+permanent delete
+
+数据库中：
+
+deleted_at != NULL
+
+表示已删除。
+
+8. Notebook Empty State
+
+新建 notebook 后：
+
+默认进入：
+
+Upload Data
+
+如果没有上传数据：
+
+以下页面全部不可用：
+
+Clustering
+Statistics
+Plots
+Heatmap
+
+显示：
+
+No dataset loaded.
+Please upload data first.
+
+逻辑：
+
+Notebook created
+   ↓
+Upload Data required
+   ↓
+Other modules unlocked
+9. Data Binding Rules（重要）
+
+现在数据绑定关系：
+
+Notebook
+   ↓
+Dataset
+   ↓
+Ground Truth
+   ↓
+Results
+   ↓
+Train Log
+
+即：
+
+一个 notebook 可以拥有多个 dataset。
+
+切换 dataset：
+
+动态刷新：
+
+Clustering
+Statistics
+Plots
+Heatmap
+10. Important Constraints
+
+这是增量升级：
+
+禁止：
+
+重写已有 Clustering
+重写已有 Statistics
+重写已有 Plots
+重写已有 Heatmap
+
+只允许：
+
+把它们迁移到 notebook 内部
+增加 Homepage 层
+增加 PostgreSQL 数据持久层
+增加 notebook 管理逻辑
+增加 dataset 管理逻辑
+增加 Trash 逻辑
+
+核心目标：
+
+实现：
+
+Notebook-centric workspace
+Dataset persistence
+Database-backed records
+Multi-notebook management
+Trash recovery system

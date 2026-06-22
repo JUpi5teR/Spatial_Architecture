@@ -1,29 +1,33 @@
-﻿"""ClustroView main window.
+"""ClustroView main window.
 
 Layout (per ideal front-end image):
-    [ Sidebar |  Scrollable right panel  ]
-                  - Title row (Clustering Comparison + section selector)
-                  - Visualization area (acrylic 3D panel + floating controls)
-                  - Data area (5 tabs)
+    [ Sidebar |  QStackedWidget module pages ]
+                  - Page 0: Clustering (3D Spatial / Side-by-Side)
+                  - Pages 1+: Overview, Upload, Datasets, etc.
 
 Themes: light by default, dark toggleable via sidebar.
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow,
-    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QStatusBar,
+    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QStatusBar,
     QTextEdit, QVBoxLayout, QWidget,
 )
 
 from model.image_manager import ImageCollection, ImagePair
 from model.overlay_data import OverlayDataset
 from utils.logger import logger
+from model.data_path import DataPathManager
+from view.upload_view import UploadViewWidget
+from view.statistics_view import StatisticsViewWidget
+from view.plots_view import PlotsViewWidget
+from view.heatmap_view import HeatmapViewWidget
 from view.comparison_view import ComparisonViewWidget
 from view.data_area import DataAreaWidget
 from spatial_viewer import SpatialViewerWidget, load_spatial_dataset, SECTION_IDS as SPATIAL_SECTION_IDS
@@ -68,8 +72,8 @@ def apply_theme(dark: bool) -> None:
 # ====================================================================
 #  Styles for the right panel
 # ====================================================================
-_CONTENT_DARK = "background-color: #121214;"
-_CONTENT_LIGHT = "background-color: #ffffff;"
+# _CONTENT_DARK = "background-color: #121214;"  # unused after module stack
+# _CONTENT_LIGHT = "background-color: #ffffff;"  # unused after module stack
 
 _TITLE_LIGHT = "color: #1a1a1a; font-size: 24px; font-weight: 800;"
 _TITLE_DARK = "color: #f5f5f7; font-size: 24px; font-weight: 800;"
@@ -313,8 +317,17 @@ class MainWindow(QMainWindow):
         self._current_index: int = 0
         self._dark_theme: bool = False
         self._is_3dflip_mode: bool = True  # default per spec
+
+        # ---- Data path & sub-page widgets ----
+        self._path_mgr = DataPathManager()
+        self._upload_widget: Any = None
+        self._statistics_widget: Any = None
+        self._plots_widget: Any = None
+        self._heatmap_widget: Any = None
+        self._no_path_overlay: Any = None
         self._spatial_mode: bool = False  # spatial viewer mode
         self._view_mode: str = "spatial"  # sbs / spatial
+        self._module_data: dict[str, dict] = {}  # module page metadata for theming
 
         self.setWindowTitle("ClustroView - Clustering Comparison")
         self.setMinimumSize(1180, 760)
@@ -359,19 +372,88 @@ class MainWindow(QMainWindow):
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        self._content = QWidget()
-        self._content.setStyleSheet(_CONTENT_LIGHT)
-        cl = QVBoxLayout(self._content)
+        # ---- Module pages stack ----
+        self._module_stack = QStackedWidget()
+        self._module_index = {"clustering": 0}
+        self._module_pages = {}
+
+        # Page 0: Clustering (existing content, unchanged)
+        self._clustering_page = QWidget()
+        cl = QVBoxLayout(self._clustering_page)
         cl.setContentsMargins(24, 20, 24, 20)
         cl.setSpacing(12)
-
         self._build_title_row(cl)
         self._build_visualization_area(cl)
         self._build_data_area(cl)
         cl.addStretch()
+        self._module_stack.addWidget(self._clustering_page)
 
-        self._scroll.setWidget(self._content)
-        root.addWidget(self._scroll, 1)
+        # Pages 1+: other modules
+        _MODULE_PAGES = [
+            ("overview", "Overview", "⌂", "Dataset overview and summary statistics."),
+            ("datasets", "Datasets", "▤", "Browse and manage available datasets."),
+            ("preprocessing", "Preprocessing", "⚙", "Data preprocessing and quality control."),
+            ("marker_genes", "Marker Genes", "⚗", "Identify differentially expressed marker genes."),
+            ("dimensionality", "Dimensionality", "∿", "Dimensionality reduction methods: PCA, t-SNE, UMAP."),
+            ("trajectory", "Trajectory", "⤳", "Trajectory inference and pseudotime analysis."),
+            ("comparison", "Comparison", "⊕", "Compare results across multiple analyses."),
+        ]
+        for i, (key, title, icon, desc) in enumerate(_MODULE_PAGES, start=1):
+            page, meta = self._create_module_page(title, icon, desc)
+            self._module_stack.addWidget(page)
+            self._module_index[key] = i
+            self._module_pages[key] = page
+            self._module_data[key] = meta
+
+        self._module_stack.setCurrentIndex(0)
+
+        # ---- Upload Data page (custom widget) ----
+        upload_idx = len(_MODULE_PAGES) + 1
+        self._upload_widget = UploadViewWidget(self._path_mgr)
+        self._upload_widget.folder_registered.connect(self._on_folder_registered)
+        self._module_stack.addWidget(self._upload_widget)
+        self._module_index["upload"] = upload_idx
+        self._module_pages["upload"] = self._upload_widget
+
+        # ---- Statistics page (custom widget) ----
+        stat_idx = upload_idx + 1
+        self._statistics_widget = StatisticsViewWidget(self._path_mgr)
+        self._module_stack.addWidget(self._statistics_widget)
+        self._module_index["statistics"] = stat_idx
+        self._module_pages["statistics"] = self._statistics_widget
+
+        # ---- Plots page (custom widget) ----
+        plots_idx = stat_idx + 1
+        self._plots_widget = PlotsViewWidget(self._path_mgr)
+        self._module_stack.addWidget(self._plots_widget)
+        self._module_index["plots"] = plots_idx
+        self._module_pages["plots"] = self._plots_widget
+
+        # ---- Heatmap page (custom widget) ----
+        heat_idx = plots_idx + 1
+        self._heatmap_widget = HeatmapViewWidget(self._path_mgr)
+        self._module_stack.addWidget(self._heatmap_widget)
+        self._module_index["heatmaps"] = heat_idx
+        self._module_pages["heatmaps"] = self._heatmap_widget
+
+        self._scroll.setWidget(self._module_stack)
+
+        # ---- No-path overlay ----
+        self._no_path_overlay = QLabel(
+            "\u26A0  \u8BF7\u5148\u4E0A\u4F20\u6587\u4EF6\u5939\n\n"
+            "\u8BF7\u5207\u6362\u5230 Upload Data \u9875\u9762\uFF0C\u9009\u62E9\u6570\u636E\u4E3B\u6587\u4EF6\u5939\u3002\n"
+            "\u652F\u6301\u76F4\u63A5\u9009\u62E9\u6587\u4EF6\u5939\u6216\u4E0A\u4F20 .zip \u538B\u7F29\u5305\u3002"
+        )
+        self._no_path_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._no_path_overlay.setStyleSheet("color: #888; font-size: 18px; background: #fafafa;")
+        self._no_path_overlay.setWordWrap(True)
+
+        self._body_stack = QStackedWidget()
+        self._body_stack.addWidget(self._scroll)
+        self._body_stack.addWidget(self._no_path_overlay)
+        self._body_stack.setCurrentIndex(0)
+
+        root.addWidget(self._body_stack, 1)
 
         # Status bar
         self._qt_status = QStatusBar()
@@ -531,7 +613,6 @@ class MainWindow(QMainWindow):
         apply_theme(dark)
         self._title_label.setStyleSheet(_TITLE_DARK if dark else _TITLE_LIGHT)
         self._subtitle_label.setStyleSheet(_SUBTITLE_DARK if dark else _SUBTITLE_LIGHT)
-        self._content.setStyleSheet(_CONTENT_DARK if dark else _CONTENT_LIGHT)
         self._scroll.setStyleSheet(
             f"QScrollArea {{ border: none; background-color: "
             f"{'#121214' if dark else '#ffffff'}; }}"
@@ -546,25 +627,170 @@ class MainWindow(QMainWindow):
             "color: #ad6800; font-size: 11px;"
         )
         self._comparison_widget.update_theme(dark)
+        # Update module pages theme
+        _ICON_C = "#64b4ff" if dark else "#1a6bc0"
+        _TITLE_C = "#f5f5f7" if dark else "#1a1a1a"
+        _DESC_C = "#8a8a90" if dark else "#888"
+        _INFO_C = "#8a8a90" if dark else "#666"
+        _SEP_C = "#2a2a2e" if dark else "#ececec"
+        _CA_BG = "#1a1a1e" if dark else "#fafafa"
+        _CA_BD = "#2a2a2e" if dark else "#ececec"
+        _PAGE_BG = "#121214" if dark else "#ffffff"
+        for key, meta in self._module_data.items():
+            meta["icon"].setStyleSheet(f"font-size: 28px; color: {_ICON_C};")
+            meta["title"].setStyleSheet(f"color: {_TITLE_C}; font-size: 24px; font-weight: 800;")
+            meta["desc"].setStyleSheet(f"color: {_DESC_C}; font-size: 13px;")
+            meta["info"].setStyleSheet(f"color: {_INFO_C}; font-size: 12px;")
+            meta["sep"].setStyleSheet(f"background: {_SEP_C}; max-height: 1px; min-height: 1px;")
+            meta["content"].setStyleSheet(f"""
+QFrame#moduleContent {{
+    background: {_CA_BG};
+    border: 1px solid {_CA_BD};
+    border-radius: 8px;
+}}
+""")
+            meta["page"].setStyleSheet(f"background-color: {_PAGE_BG};")
+
+    # ================================================================
+    #  Module pages
+    # ================================================================
+    def _create_module_page(self, title: str, icon: str, description: str):
+        """Create a consistent-styled module page with icon, title, description and content area."""
+        dark = self._dark_theme
+        page = QWidget()
+        bg = "#121214" if dark else "#ffffff"
+        page.setStyleSheet(f"background-color: {bg};")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setSpacing(16)
+
+        # Icon + Title row
+        title_row = QHBoxLayout()
+        title_row.setSpacing(12)
+
+        icon_label = QLabel(icon)
+        icon_lb_color = "#64b4ff" if dark else "#1a6bc0"
+        icon_label.setStyleSheet(f"font-size: 28px; color: {icon_lb_color};")
+        icon_label.setFixedSize(44, 44)
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_row.addWidget(icon_label)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(4)
+        title_lb = QLabel(title)
+        title_c = "#f5f5f7" if dark else "#1a1a1a"
+        title_lb.setStyleSheet(f"color: {title_c}; font-size: 24px; font-weight: 800;")
+        text_col.addWidget(title_lb)
+
+        desc_lb = QLabel(description)
+        desc_c = "#8a8a90" if dark else "#888"
+        desc_lb.setStyleSheet(f"color: {desc_c}; font-size: 13px;")
+        desc_lb.setWordWrap(True)
+        text_col.addWidget(desc_lb)
+
+        title_row.addLayout(text_col, 1)
+        layout.addLayout(title_row)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep_c = "#2a2a2e" if dark else "#ececec"
+        sep.setStyleSheet(f"background: {sep_c}; max-height: 1px; min-height: 1px;")
+        layout.addWidget(sep)
+
+        # Content area
+        content_area = QFrame()
+        content_area.setObjectName("moduleContent")
+        ca_bg = "#1a1a1e" if dark else "#fafafa"
+        ca_bd = "#2a2a2e" if dark else "#ececec"
+        content_area.setStyleSheet(f"""
+QFrame#moduleContent {{
+    background: {ca_bg};
+    border: 1px solid {ca_bd};
+    border-radius: 8px;
+}}
+""")
+        content_ly = QVBoxLayout(content_area)
+        content_ly.setContentsMargins(20, 20, 20, 20)
+
+        info = QLabel(f"The {title} module is ready. Configure your analysis parameters and run workflows from this page.")
+        info_c = "#8a8a90" if dark else "#666"
+        info.setStyleSheet(f"color: {info_c}; font-size: 12px;")
+        info.setWordWrap(True)
+        content_ly.addWidget(info)
+        content_ly.addStretch()
+
+        layout.addWidget(content_area, 1)
+
+        meta = {
+            "icon": icon_label,
+            "title": title_lb,
+            "desc": desc_lb,
+            "sep": sep,
+            "content": content_area,
+            "info": info,
+            "page": page,
+        }
+        return page, meta
 
     # ================================================================
     #  Sidebar module selection
     # ================================================================
     def _on_module_selected(self, key: str) -> None:
-        if key == "clustering":
+        idx = self._module_index.get(key)
+        if idx is None:
             return
-        # All other modules: not implemented yet
-        QMessageBox.information(
-            self,
-            "Module not implemented",
-            f"The module \"{key}\" is part of the ClustroView platform navigation\n"
-            f"but is not yet implemented. Only the Clustering Comparison page is\n"
-            f"available in this build.",
-        )
+
+        has_path = self._controller is not None and self._controller.has_data_path()
+        if key == "upload":
+            self._body_stack.setCurrentIndex(0)
+            self._module_stack.setCurrentIndex(idx)
+        elif not has_path:
+            self._no_path_overlay.setText(
+                "\u26A0  \u8BF7\u5148\u4E0A\u4F20\u6587\u4EF6\u5939\n\n"
+                "\u8BF7\u5207\u6362\u5230 Upload Data \u9875\u9762\uFF0C\u9009\u62E9\u6570\u636E\u4E3B\u6587\u4EF6\u5939\u3002\n"
+                "\u652F\u6301\u76F4\u63A5\u9009\u62E9\u6587\u4EF6\u5939\u6216\u4E0A\u4F20 .zip \u538B\u7F29\u5305\u3002"
+            )
+            self._body_stack.setCurrentIndex(1)
+        else:
+            self._body_stack.setCurrentIndex(0)
+            self._module_stack.setCurrentIndex(idx)
+            if key == "statistics" and self._statistics_widget is not None:
+                self._statistics_widget.load_data()
+            elif key == "plots" and self._plots_widget is not None:
+                self._plots_widget.load_data()
+            elif key == "heatmaps" and self._heatmap_widget is not None:
+                self._heatmap_widget.load_data()
+
+        title_map = {
+            "clustering": "Clustering Comparison",
+            "overview": "Overview",
+            "upload": "Upload Data",
+            "datasets": "Datasets",
+            "preprocessing": "Preprocessing",
+            "marker_genes": "Marker Genes",
+            "dimensionality": "Dimensionality Reduction",
+            "statistics": "Statistics",
+            "plots": "Plots",
+            "heatmaps": "Heatmaps",
+            "trajectory": "Trajectory Analysis",
+            "comparison": "Comparison",
+        }
+        name = title_map.get(key, key.capitalize())
+        self.setWindowTitle(f"ClustroView - {name}")
 
     # ================================================================
     #  Public API used by controller
     # ================================================================
+    def set_path_manager(self, mgr) -> None:
+        """Inject shared DataPathManager from controller."""
+        self._path_mgr = mgr
+
+    def _on_folder_registered(self, root_path):
+        """Upload page registered a new folder."""
+        if self._controller is not None:
+            self._controller.reload_from_path(root_path)
+
     def set_controller(self, c) -> None:
         self._controller = c
 
