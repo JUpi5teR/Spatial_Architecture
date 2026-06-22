@@ -48,7 +48,8 @@ def load_image(path: Optional[Path]) -> Optional[np.ndarray]:
     if path is None:
         return None
     try:
-        bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        raw = np.fromfile(str(path), dtype=np.uint8)
+        bgr = cv2.imdecode(raw, cv2.IMREAD_COLOR)
         if bgr is None:
             logger.warning("Failed to decode image: %s", path)
             return None

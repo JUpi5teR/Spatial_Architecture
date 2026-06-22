@@ -1,116 +1,163 @@
 # coding: utf-8
-"""Heatmap page - spatial heatmap viewer (interface placeholder).
+"""Heatmap page - confusion matrix heatmap grid.
 
-Modes: Ground Truth / Prediction / Density.
-Full rendering injected via set_renderer().
+3 x 4 grid layout showing GT x Pred confusion matrices per sample.
+Top-left corner: sample ID + ARI value (e.g. "151507 (ARI=0.540)").
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+import numpy as np
+import pandas as pd
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
+
 from PySide6.QtWidgets import (
-    QComboBox, QFrame, QHBoxLayout, QLabel,
-    QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from model.data_path import DataPathManager
+from utils.logger import logger
 
 
 class HeatmapViewWidget(QWidget):
-    """Spatial heatmap viewer with mode selector.
+    """Confusion matrix heatmap grid (3 x 4) for all samples."""
 
-    Interface:
-        load_data()    - refresh from DataPathManager
-        clear()        - reset to placeholder
-        set_renderer() - inject render callback
-
-    Signals:
-        mode_changed(str) - ground_truth / prediction / density
-    """
-
-    mode_changed = Signal(str)
-
-    def __init__(self, path_mgr: DataPathManager, parent: Optional[QWidget] = None):
+    def __init__(self, path_mgr, parent=None):
         super().__init__(parent)
         self._mgr = path_mgr
-        self._mode = "ground_truth"
-        self._renderer: Optional[Callable] = None
-        self._placeholder: Optional[QLabel] = None
+        self._canvas = None
+        self._figure = None
+        self._overlay_datasets = []
+        self._ari_map = {}
         self._build_ui()
 
-    # -------- public interface --------
-    def load_data(self) -> None:
-        if not self._mgr.has_valid_data():
-            self._show_placeholder("⚠  请先上传数据文件夹 (Upload Data)")
-            return
-        if self._renderer is None:
-            st = self._mgr.structure()
-            n = len(st.section_ids) if st else 0
-            self._show_placeholder(
-                f"✅  数据已加载  |  样本: {n}\n\n"
-                "Heatmap 渲染引擎待注入。"
-            )
-            return
-        self._show_content()
-
-    def clear(self) -> None:
-        self._show_placeholder("ℹ  暂无数据")
-
-    def set_renderer(self, renderer: Callable) -> None:
-        self._renderer = renderer
-        if self._mgr.has_valid_data():
-            self.load_data()
-
-    # -------- UI --------
-    def _build_ui(self) -> None:
+    def _build_ui(self):
         ly = QVBoxLayout(self)
-        ly.setContentsMargins(40, 34, 40, 34)
-        ly.setSpacing(12)
+        ly.setContentsMargins(20, 20, 20, 20)
+        ly.setSpacing(10)
 
-        title = QLabel("▦  Heatmap")
-        title.setStyleSheet("font-size: 24px; font-weight: 800; color: #1a1a1a;")
+        title = QLabel("Confusion Matrix Heatmaps")
+        title.setStyleSheet("font-size: 22px; font-weight: 800; color: #1a1a1a;")
         ly.addWidget(title)
-
-        ctrl = QHBoxLayout()
-        ctrl.setSpacing(12)
-        ctrl.addWidget(QLabel("模式:"))
-        self._mode_combo = QComboBox()
-        self._mode_combo.setFixedWidth(160)
-        self._mode_combo.addItems(["Ground Truth", "Prediction", "Density"])
-        self._mode_combo.setStyleSheet(
-            "QComboBox { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 4px 8px; }"
-        )
-        self._mode_combo.currentIndexChanged.connect(self._on_mode)
-        ctrl.addWidget(self._mode_combo)
-        ctrl.addStretch()
-        ly.addLayout(ctrl)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet("background: #ececec; max-height: 1px; min-height: 1px;")
         ly.addWidget(sep)
 
-        self._placeholder = QLabel("ℹ  暂无数据")
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setStyleSheet("color: #888; font-size: 14px;")
-        self._placeholder.setWordWrap(True)
-        ly.addWidget(self._placeholder, 1)
+        self._figure = Figure(figsize=(16, 12), dpi=100)
+        self._canvas = FigureCanvasQTAgg(self._figure)
+        self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        ly.addWidget(self._canvas, 1)
 
-    def _on_mode(self, idx: int) -> None:
-        modes = ["ground_truth", "prediction", "density"]
-        if 0 <= idx < len(modes):
-            self._mode = modes[idx]
-            self.mode_changed.emit(self._mode)
-            if self._renderer is not None and self._mgr.has_valid_data():
-                self.load_data()
+    def load_data(self):
+        structure = self._mgr.structure()
+        if structure is None or not structure.is_valid:
+            self._draw_placeholder("No data loaded")
+            return
+        self._draw()
 
-    def _show_placeholder(self, msg: str) -> None:
-        if self._placeholder:
-            self._placeholder.setText(msg)
-            self._placeholder.setVisible(True)
+    def set_overlay_datasets(self, datasets):
+        self._overlay_datasets = datasets
 
-    def _show_content(self) -> None:
-        if self._placeholder:
-            self._placeholder.setVisible(False)
+    def set_ari_map(self, ari_map):
+        self._ari_map = ari_map
+
+    def _draw(self):
+        datasets = self._overlay_datasets
+        if not datasets:
+            self._draw_placeholder("No overlay data available")
+            return
+
+        self._figure.clear()
+
+        n = len(datasets)
+        ncols = 4
+        nrows = (n + ncols - 1) // ncols
+
+        for idx, ds in enumerate(datasets):
+            ax = self._figure.add_subplot(nrows, ncols, idx + 1)
+            self._draw_single_confusion(ax, ds)
+
+        self._figure.tight_layout(pad=3.0, h_pad=2.5, w_pad=2.5)
+        self._canvas.draw()
+
+    def _draw_single_confusion(self, ax, ds):
+        sid = ds.section_id
+        gt = ds.gt_clusters
+        pr = ds.pred_clusters
+
+        # Build confusion matrix
+        if not gt or not pr or not ds.confusion:
+            ax.text(0.5, 0.5, sid + "\nNo data", ha="center", va="center",
+                   transform=ax.transAxes, fontsize=10, color="#888")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            return
+
+        mat = np.zeros((len(gt), len(pr)), dtype=int)
+        for (g, p), n in ds.confusion.items():
+            if g in gt and p in pr:
+                mat[gt.index(g), pr.index(p)] = n
+
+        # Draw heatmap
+        im = ax.imshow(mat, cmap="Blues", aspect="auto")
+
+        # Shorten labels for display
+        def _short(s):
+            s = str(s)
+            if s.startswith("Layer"):
+                return "L" + s[5:]
+            if s.startswith("Cluster"):
+                return "C" + s[7:]
+            return s[:6]
+
+        gt_short = [_short(g) for g in gt]
+        pr_short = [_short(p) for p in pr]
+
+        ax.set_xticks(range(len(pr)))
+        ax.set_xticklabels(pr_short, fontsize=7, rotation=0)
+        ax.set_yticks(range(len(gt)))
+        ax.set_yticklabels(gt_short, fontsize=7)
+
+        # Cell values
+        max_val = mat.max()
+        for i in range(len(gt)):
+            for j in range(len(pr)):
+                v = mat[i, j]
+                if v == 0:
+                    continue
+                color = "#fff" if max_val > 0 and v > max_val * 0.55 else "#333"
+                ax.text(j, i, str(v), ha="center", va="center",
+                        color=color, fontsize=6)
+
+        # Top-left corner label: sample ID + ARI
+        ari_val = self._ari_map.get(sid, None)
+        if ari_val is not None:
+            label = "%s (ARI=%.3f)" % (sid, ari_val)
+        else:
+            label = sid
+
+        ax.set_title(label, fontsize=8, fontweight="bold", loc="left",
+                    color="#1a1a1a", pad=2)
+
+        # Axis labels
+        ax.set_xlabel("Pred", fontsize=7, color="#666", labelpad=1)
+        ax.set_ylabel("True", fontsize=7, color="#666", labelpad=1)
+
+        # Remove spines
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+    def _draw_placeholder(self, message):
+        self._figure.clear()
+        ax = self._figure.add_subplot(111)
+        ax.text(0.5, 0.5, message, transform=ax.transAxes, ha="center", va="center",
+                fontsize=16, color="#888")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        self._figure.tight_layout()
+        self._canvas.draw()

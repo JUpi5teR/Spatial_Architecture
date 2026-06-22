@@ -1,9 +1,12 @@
-"""Training Validation Viewer - Entry Point."""
+# coding: utf-8
+"""ClustroView - Spatial Transcriptomics Analysis Platform.
+
+Entry point.
+Architecture: Homepage -> Notebook Workspace -> Analysis Modules
+"""
 import os as _os
+
 # Fix: conda + user-site PySide6 can't find the Qt platform plugin.
-# PySide6 lives in the PEP 370 user-site dir, but Qt looks for plugins
-# next to the Python executable (conda's site-packages). Point Qt at the
-# real plugin dir before any Qt import happens.
 import PySide6 as _ps6
 if "QT_PLUGIN_PATH" not in _os.environ:
     _plug = _os.path.join(_os.path.dirname(_ps6.__file__), "plugins")
@@ -13,6 +16,12 @@ if "QT_PLUGIN_PATH" not in _os.environ:
 del _os, _ps6
 
 import sys
+from pathlib import Path
+
+# Ensure project root is on sys.path so 'backend' is importable
+_PROJ_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJ_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJ_ROOT))
 
 from PySide6.QtWidgets import QApplication
 
@@ -23,17 +32,16 @@ from view.main_window import MainWindow, apply_theme
 
 def main() -> None:
     """Application entry point."""
-    logger.info("Starting Training Validation Viewer")
+    logger.info("Starting ClustroView")
     logger.info("Python version: %s", sys.version)
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    apply_theme(dark=False)  # light by default per request.md
+    apply_theme(dark=False)
 
     window = MainWindow()
     controller = MainController(window)
-    window._controller = controller
 
     try:
         controller.initialize()

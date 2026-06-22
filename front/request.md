@@ -1,354 +1,64 @@
-Project Architecture Upgrade: Convert into Notebook-based Workspace
-
-基于当前已有项目进行 架构升级，不是重构已有功能。
-
-目标：
-
-将整个系统改造成类似 NotebookLM + CVAT 的结构：
-
-顶层为 Homepage（Notebook 管理层）
-每个 Notebook 是独立工作空间（Workspace）
-原本所有功能（Upload Data / Clustering / Statistics / Plots / Heatmap）都移动到 Notebook 内部
-
-原则：
-
-保持已有功能逻辑不变
-改变整体组织结构
-增加数据库持久化
-1. Global Structure Upgrade
-
-原结构：
-
-App
-├── Upload Data
-├── Clustering
-├── Statistics
-├── Plots
-├── Heatmap
-
-升级为：
-
-App
-├── Homepage
-│   ├── Notebook List
-│   ├── Database Panel
-│   ├── Create Notebook
-│   └── Trash
-│
-└── Notebook Workspace
-    ├── Upload Data
-    ├── Clustering
-    ├── Statistics
-    ├── Plots
-    └── Heatmap
-2. Homepage（新的根页面）
-
-Homepage 作为入口页面。
-
-特点：
-
-没有左侧 sidebar
-展示所有 Notebook 记录
-类似 NotebookLM 的 notebook 卡片布局
-
-展示内容：
-
-每个 Notebook 卡片：
-
-notebook name
-create time
-last modified time
-dataset count
-preview image（如果存在）
-
-支持：
-
-点击进入 notebook
-重命名 notebook
-删除 notebook（进入 Trash）
-
-新增：
-
-Create Notebook Button
-
-功能：
-
-新建 notebook：
-
-默认：
-
-Notebook_{timestamp}
-
-创建后：
-
-自动进入 notebook 内部：
-
-default page = Upload Data
-3. Notebook Workspace（原功能整体迁移）
-
-原有：
-
-Upload Data
-Clustering
-Statistics
-Plots
-Heatmap
-
-全部作为 notebook 内部功能。
-
-现在逻辑变为：
-
-Homepage
-   ↓
-Notebook
-   ↓
-Upload Data
-   ↓
-Clustering
-   ↓
-Statistics
-   ↓
-Plots
-
-Upload Data
-   ↓
-Heatmap
-
-新增：
-
-点击：
-
-Homepage
-
-返回：
-
-Homepage notebook list
-4. Upload Data（改为 notebook scoped）
-
-现在每个 notebook 拥有独立 data。
-
-即：
-
-原来：
-
-global app data
-
-改为：
-
-notebook-local data
-
-每个 notebook 的上传数据绑定到 notebook id。
-
-要求：
-
-支持：
-
-folder upload
-zip upload
-auto unzip
-
-保留：
-
-File Structure Guide
-
-上传后：
-
-写入数据库。
-
-5. Database System（新增核心模块）
-
-新增独立 Database 页面（在 Homepage 内展示）。
-
-数据库使用：
-
-PostgreSQL
-
-用途：
-
-记录所有 notebook 和 notebook 中的数据上传记录。
-
-数据库设计：
-
-Table: notebooks
-id
-name
-created_at
-updated_at
-status
-deleted_at
-Table: datasets
-id
-notebook_id
-name
-upload_time
-file_path
-preview_image
-ground_truth_path
-results_path
-train_log_path
-status
-
-默认：
-
-name = upload_timestamp
-6. Database Panel（Homepage 中展示）
-
-新增 Database 面板。
-
-功能：
-
-展示所有上传记录（datasets）：
-
-内容：
-
-dataset name
-notebook name
-upload time
-file path
-
-支持：
-
-Select dataset
-
-功能：
-
-点击后：
-
-加载该 dataset
-打开所属 notebook
-展示内容
-
-支持：
-
-CRUD
-
-数据库中的 data 可：
-
-Create（上传新增）
-Read（查看）
-Update（重命名/替换）
-Delete（删除）
-
-注意：
-
-这里操作的是：
-
-upload record
-
-不是原始文件本身。
-
-7. Trash System
-
-Homepage 左下角固定：
-
-Trash icon
-
-功能：
-
-回收：
-
-deleted notebooks
-
-行为：
-
-删除 notebook：
-
-不是立即删除：
-
-move to trash
-
-Trash 支持：
-
-restore
-permanent delete
-
-数据库中：
-
-deleted_at != NULL
-
-表示已删除。
-
-8. Notebook Empty State
-
-新建 notebook 后：
-
-默认进入：
-
-Upload Data
-
-如果没有上传数据：
-
-以下页面全部不可用：
-
-Clustering
-Statistics
-Plots
-Heatmap
-
-显示：
-
-No dataset loaded.
-Please upload data first.
-
-逻辑：
-
-Notebook created
-   ↓
-Upload Data required
-   ↓
-Other modules unlocked
-9. Data Binding Rules（重要）
-
-现在数据绑定关系：
-
-Notebook
-   ↓
-Dataset
-   ↓
-Ground Truth
-   ↓
-Results
-   ↓
-Train Log
-
-即：
-
-一个 notebook 可以拥有多个 dataset。
-
-切换 dataset：
-
-动态刷新：
-
-Clustering
-Statistics
-Plots
-Heatmap
-10. Important Constraints
-
-这是增量升级：
-
-禁止：
-
-重写已有 Clustering
-重写已有 Statistics
-重写已有 Plots
-重写已有 Heatmap
-
-只允许：
-
-把它们迁移到 notebook 内部
-增加 Homepage 层
-增加 PostgreSQL 数据持久层
-增加 notebook 管理逻辑
-增加 dataset 管理逻辑
-增加 Trash 逻辑
-
-核心目标：
-
-实现：
-
-Notebook-centric workspace
-Dataset persistence
-Database-backed records
-Multi-notebook management
-Trash recovery system
+多维度数据可视化需求提示词
+一、整体输入基础说明
+核心数据源：5 个 CSV 格式的训练指标文件，分别为ari.csv、cs.csv、hs.csv、loss.csv、nmi.csv
+行维度：训练样本（唯一图片 ID，如 151507、151508、151669 等）
+列维度：训练迭代轮次 epoch（从 0 到训练结束的最终 epoch）
+单元格数值：对应样本在该 epoch 下的指定指标计算结果
+样式参考基准：用户提供的 12 个样本混淆矩阵热力图，核心特征为：单样本对应独立热力图、左上角标注样本 ID + 核心指标值、横纵轴为预测 / 真实分类标签、单元格为统计数值 + 颜色渐变映射、3 行 4 列网格排版。
+二、分页面可视化需求
+页面 1：Statistics 统计结果汇总页
+核心目标
+基于所有指标的最终 epoch 收敛数值，生成样本级指标柱状图，同时输出全样本的统计特征分析结果。
+详细要求
+数据基准：提取每个 CSV 文件中，所有样本在最终训练 epoch的指标数值，作为唯一可视化与统计数据源。
+可视化内容：
+为 5 个指标（ARI、CS、HS、Loss、NMI）分别生成独立柱状图：X 轴为样本 ID，Y 轴为对应指标的最终 epoch 数值，单根柱子对应单个样本的最终结果。
+每张柱状图必须标注完整的图表标题、X 轴标签、Y 轴标签；X 轴样本 ID 可根据数量调整旋转角度，确保无重叠、可清晰辨识。
+统计特征输出：
+针对每个指标的全样本最终数值，计算并展示以下核心统计量：平均值、中位数、最大值、最小值、标准差、上四分位数 Q1、下四分位数 Q3。
+统计结果采用规范表格形式展示，与对应指标的柱状图同页面就近排布，便于对照查看。
+视觉规范：
+同指标的柱状图与统计表格采用统一配色与排版风格，不同指标用差异化主题色区分，避免视觉混淆。
+确保图表无元素重叠、标签清晰、数值可读，符合专业数据分析可视化规范。
+页面 2：Plots 训练趋势折线图页
+核心目标
+基于全 epoch 的时间序列数据，为每个样本生成指标随训练迭代变化的趋势折线图，直观展示训练过程中的指标波动、收敛趋势与极值变化。
+详细要求
+数据基准：使用每个 CSV 文件中，单个样本从 epoch 0 到最终 epoch 的完整时间序列数值，作为折线图的唯一数据源。
+可视化内容：
+为每个样本生成对应 5 个指标的趋势折线图，支持两种排版方案（二选一，确保可读性优先）：
+方案 1：单张图表整合 5 个指标的折线，X 轴为训练 epoch，Y 轴为指标数值，添加清晰图例区分不同指标的颜色与线条样式；
+方案 2：每个指标对应独立子图，按样本 ID 分组集中排布，每张子图标注明确的样本 ID 与指标名称。
+所有折线图必须标注完整的图表标题、X 轴标签、Y 轴标签，可添加浅灰色网格线提升数值可读性。
+排版要求：
+按样本 ID 顺序分组排布，每个样本的所有指标趋势图集中展示，便于单样本的多指标对比。
+采用多行列的网格布局展示所有样本的趋势图，控制单页图表密度，确保页面整洁、无过度拥挤。
+视觉规范：
+同一指标在所有样本的折线图中，采用完全统一的颜色、线条粗细与样式，保持全页面视觉一致性。
+折线清晰平滑，可标注最终 epoch 数值、极值点等关键节点，避免折线重叠导致的视觉混淆；必要时可通过调整透明度、分图展示优化。
+页面 3：热力图可视化页
+核心目标
+100% 匹配用户提供的示例样式，为每个样本生成分类结果混淆矩阵热力图，同时可补充指标相关性热力图作为拓展内容。
+详细要求
+核心内容：样本级混淆矩阵热力图（必须完全匹配用户示例样式）
+数据基准：每个样本的分类预测结果与真实标签的混淆矩阵数据，横纵轴分别为预测类别（Pred）与真实类别，单元格数值为对应分类的统计值。
+样式匹配要求：
+每个热力图为独立的正方形单元格网格，单元格填充与数值正相关的渐变颜色，数值越高颜色越深，与示例配色逻辑完全一致；
+每个热力图左上角必须标注样本 ID，以及该样本对应的核心指标值（格式如151507 (ARI=0.540)），与示例格式完全统一；
+横纵轴标注清晰的类别数字标签（如 0、1、2、3、4、5、6），轴标题分别为 Pred（X 轴）与真实标签（Y 轴），与示例保持一致；
+每个单元格内标注对应数值，字体大小适配单元格尺寸，无溢出、清晰可读。
+拓展内容：指标相关性热力图（可选补充）
+基于 5 个指标的全样本最终 epoch 数值，生成样本间指标相关性热力图，或指标间相关性热力图；
+热力图单元格数值为皮尔逊相关系数，采用颜色渐变映射相关系数的正负与大小，单元格内标注相关系数数值；
+标注完整的图表标题、轴标签、颜色条说明，确保可读性。
+排版要求：
+混淆矩阵热力图采用 3 行 4 列的网格布局，与用户示例完全一致，每个热力图大小统一、间距均匀，页面整洁有序；
+按样本 ID 的顺序连续排布，无错位、无遗漏。
+视觉规范：
+所有热力图的颜色渐变方案、标注格式、字体样式、配色完全统一，与用户示例的视觉风格 100% 匹配；
+无颜色断层、数值标注错误、标签错位等视觉问题。
+三、整体输出要求
+所有可视化内容严格分为三个独立的页面 / 板块，分别对应Statistics、Plots、热力图三个主题，页面结构清晰、导航逻辑明确。
+所有图表必须基于用户提供的 5 个 CSV 文件数据生成，确保数据与图表一一对应，无数据错配、数值错误等问题。
+所有可视化内容符合专业学术 / 数据分析可视化规范，标签完整、数值可读、配色专业，无视觉错误与逻辑偏差。
+若需生成实现代码，需基于 Python 的 Matplotlib、Seaborn、Plotly 等主流可视化库编写，代码结构清晰、注释完整，可直接运行生成对应可视化内容。

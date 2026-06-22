@@ -52,8 +52,9 @@ def load_spatial_dataset(data_root: str, section_id: str,
     img_path = sec_dir / "spatial" / "tissue_hires_image.png"
     if img_path.exists():
         try:
-            import cv2
-            im = cv2.imread(str(img_path))
+            import cv2, numpy as np
+            raw = np.fromfile(str(img_path), dtype=np.uint8)
+            im = cv2.imdecode(raw, cv2.IMREAD_COLOR)
             if im is not None:
                 hires_dim = float(max(im.shape[0], im.shape[1]))
         except:

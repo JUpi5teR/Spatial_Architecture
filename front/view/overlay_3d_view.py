@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from model.overlay_data import (
     ErrorType, OverlayDataset, get_layer_color,
+    get_domain_color,
     ERROR_RED_BRIGHT, ERROR_ORANGE_RED,
 )
 from utils.logger import logger
@@ -277,7 +278,7 @@ class Overlay3DViewWidget(QWidget):
             font="arial", shadow=False,
         )
         p.add_text(
-            f"Result  [{sid}]",
+            f"Prediction  [{sid}]",
             position="upper_right", font_size=11, color="#888888",
             font="arial", shadow=False,
         )
@@ -302,38 +303,20 @@ class Overlay3DViewWidget(QWidget):
         if not has_results:
             self._add_scatter_gt(ds, z, prefix="back_gt")
             return
-        correct = {}
-        fp = []
-        mis = []
+        # Render prediction scatter colored by domain (independent of GT)
+        from model.overlay_data import get_domain_color
+        domains = {}
         for c in ds.cells:
-            if c.error_type == ErrorType.CORRECT:
-                layer = c.ground_truth or "Unknown"
-                correct.setdefault(layer, []).append((c.x, c.y, z))
-            elif c.error_type == ErrorType.NEW:
-                fp.append((c.x, c.y, z))
-            elif c.error_type == ErrorType.MISCLASSIFIED:
-                mis.append((c.x, c.y, z))
-        for layer, pts in correct.items():
+            domain = c.prediction or ""
+            if not domain or domain.upper() == "NA":
+                domain = "Unknown"
+            domains.setdefault(domain, []).append((c.x, c.y, z))
+        for domain, pts in domains.items():
             arr = np.array(pts, dtype=np.float64)
-            p.add_mesh(pv.PolyData(arr), color=_hex_to_rgb(get_layer_color(layer)),
-                       point_size=_POINT_SIZE_NORMAL, render_points_as_spheres=True, lighting=False,
-                       opacity=1.0, name=f"res_correct_{layer}")
-        if fp:
-            arr = np.array(fp, dtype=np.float64)
-            p.add_mesh(pv.PolyData(arr), color=_hex_to_rgb(ERROR_RED_BRIGHT),
-                       point_size=_POINT_SIZE_ERROR, render_points_as_spheres=True,
-                       opacity=1.0, name="res_fp", lighting=False)
-        if mis:
-            arr = np.array(mis, dtype=np.float64)
-            p.add_mesh(pv.PolyData(arr), color=_hex_to_rgb(ERROR_ORANGE_RED),
-                       point_size=_POINT_SIZE_ERROR, render_points_as_spheres=True,
-                       opacity=1.0, name="res_mis", lighting=False)
-        missing = [(c.x, c.y, z) for c in ds.cells if c.error_type == ErrorType.MISSING]
-        if missing:
-            arr = np.array(missing, dtype=np.float64)
-            p.add_mesh(pv.PolyData(arr), color=(0.5, 0.5, 0.5),
-                       point_size=_POINT_SIZE_NORMAL * 0.7, render_points_as_spheres=True,
-                       opacity=0.3, name="res_miss", lighting=False)
+            color = _hex_to_rgb(get_domain_color(domain))
+            p.add_mesh(pv.PolyData(arr), color=color, point_size=_POINT_SIZE_NORMAL,
+                       render_points_as_spheres=True, opacity=1.0, lighting=False,
+                       name=f"res_domain_{domain}")
 
     def _update_stats(self, ds):
         bd = {ErrorType.MISCLASSIFIED: 0, ErrorType.NEW: 0, ErrorType.MISSING: 0}
