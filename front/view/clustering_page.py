@@ -8,7 +8,7 @@ from typing import Optional
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton,
-    QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QSizePolicy,
+    QSlider, QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QSizePolicy,
 )
 
 from model.image_manager import ImagePair
@@ -49,6 +49,8 @@ class HoverPanel(QFrame):
     mode_changed = Signal(str)
     view_requested = Signal(str)
     error_toggled = Signal(bool)
+    tolerance_changed = Signal(float)
+    strict_toggled = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -115,6 +117,26 @@ class HoverPanel(QFrame):
         self._error_btn.clicked.connect(lambda: self.error_toggled.emit(self._error_btn.isChecked()))
         ly.addWidget(self._error_btn)
 
+        # Strict mode toggle
+        self._strict_btn = QPushButton("Strict Mode (OFF)")
+        self._strict_btn.setCheckable(True)
+        self._strict_btn.setChecked(False)
+        self._strict_btn.clicked.connect(lambda: self._on_strict_toggle(self._strict_btn.isChecked()))
+        ly.addWidget(self._strict_btn)
+
+        # Tolerance radius slider
+        tol_label = QLabel("Tolerance: 0.15")
+        ly.addWidget(tol_label)
+        self._tol_slider = QSlider(Qt.Orientation.Horizontal)
+        self._tol_slider.setRange(2, 50)  # 0.02 to 0.50
+        self._tol_slider.setValue(15)      # default 0.15
+        self._tol_slider.setTickInterval(5)
+        self._tol_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._tol_slider.valueChanged.connect(
+            lambda v: self._on_tolerance_change(v, tol_label)
+        )
+        ly.addWidget(self._tol_slider)
+
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setStyleSheet("border: none; border-top: 1px solid #e0e0e0;")
@@ -131,6 +153,15 @@ class HoverPanel(QFrame):
         )
         ly.addWidget(self._cluster_info)
         ly.addStretch()
+
+    def _on_tolerance_change(self, value, label):
+        radius = value / 100.0
+        label.setText(f"Tolerance: {radius:.2f}")
+        self.tolerance_changed.emit(radius)
+
+    def _on_strict_toggle(self, checked):
+        self._strict_btn.setText("Strict Mode (ON)" if checked else "Strict Mode (OFF)")
+        self.strict_toggled.emit(checked)
 
     def _set_mode(self, mode):
         self._explore_btn.setChecked(mode == "explore")
@@ -228,6 +259,8 @@ class ClusteringPage(QWidget):
             self._hover_panel.mode_changed.connect(self._spatial_viewer.set_mode)
             self._hover_panel.view_requested.connect(self._on_hover_view)
             self._hover_panel.error_toggled.connect(self._on_error_toggle)
+            self._hover_panel.tolerance_changed.connect(self._on_tolerance_change)
+            self._hover_panel.strict_toggled.connect(self._on_strict_toggle)
             if hasattr(self._spatial_viewer, 'cluster_hovered'):
                 self._spatial_viewer.cluster_hovered.connect(
                     self._hover_panel.set_cluster_info
@@ -282,6 +315,14 @@ class ClusteringPage(QWidget):
     def _on_error_toggle(self, show):
         if self._spatial_viewer:
             self._spatial_viewer.toggle_error_visibility(show)
+
+    def _on_tolerance_change(self, radius):
+        if self._spatial_viewer:
+            self._spatial_viewer.set_tolerance(radius)
+
+    def _on_strict_toggle(self, strict):
+        if self._spatial_viewer:
+            self._spatial_viewer.set_strict_mode(strict)
 
     # ----------------------------------------------------------------
     # Data loading

@@ -255,6 +255,7 @@ CLUSTER_COLORS = {
     "Layer4": "#1F618D", "Layer5": "#1A5276", "Layer6": "#154360",
     "WM":     "#5D6D7E",
     "ERR_POSITION": "#FF1A1A", "ERR_LABEL": "#FF5A1A",
+    "TOLERATED": "#FFD700",
     "Unlabeled": "#000000",
 }
 _FALLBACK = ["#008B8B","#008080","#0E6655","#1E90FF","#7B68EE","#6A5ACD",
@@ -307,6 +308,33 @@ except:
 from pyvistaqt import QtInteractor
 
 
+
+def _point_to_segment_distance(px, py, x1, y1, x2, y2):
+    """Minimum distance from point (px,py) to line segment (x1,y1)-(x2,y2)."""
+    dx, dy = x2 - x1, y2 - y1
+    if dx == 0 and dy == 0:
+        return np.sqrt((px - x1) ** 2 + (py - y1) ** 2)
+    t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)))
+    cx, cy = x1 + t * dx, y1 + t * dy
+    return np.sqrt((px - cx) ** 2 + (py - cy) ** 2)
+
+
+def _point_to_polygon_distance(px, py, poly):
+    """Minimum distance from point to polygon boundary edges."""
+    min_dist = float("inf")
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        d = _point_to_segment_distance(px, py, x1, y1, x2, y2)
+        if d < min_dist:
+            min_dist = d
+    return min_dist
+
+
+# Adjacent layer pairs for boundary tolerance
+_LAYER_ADJACENCIES = [(1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 0)]  # 0 = WM
+
 class SpatialViewerWidget(QWidget):
     cluster_hovered = Signal(str, int, dict)  # cluster_name, cell_count, metadata_preview
 
@@ -319,6 +347,10 @@ class SpatialViewerWidget(QWidget):
         self._hover_observer_id = None
         self._results_dataset: Optional[SpatialDataset] = None
         self._view_side: str = "front"  # front or back
+        self._tolerance_radius: float = 0.15
+        self._strict_mode: bool = False
+        self._layer_buffer_zones: dict = {}
+        self._tolerated_indices: set = set()
 
         self._pw = 4.0
         self._ph = 3.0
@@ -398,6 +430,67 @@ class SpatialViewerWidget(QWidget):
         self._results_dataset = results_dataset
         self._hovered_cluster = None
         self._clear_boundaries()
+        self._build_layer_buffer_zones()
+        self._build_point_cloud()
+        self._update_labels()
+        self._plotter.render()
+
+    def _build_layer_buffer_zones(self):
+        """Compute buffer zones between adjacent GT layers for tolerance check."""
+        ds = self._dataset
+        if ds is None:
+            self._layer_buffer_zones = {}
+            return
+
+        # Group GT points by normalized layer id
+        layer_pts = {}
+        for cell in ds.cells:
+            nid = _normalize_label(cell.cluster)
+            if nid is not None:
+                layer_pts.setdefault(nid, []).append((cell.x, cell.y))
+
+        tolerance = self._tolerance_radius
+        buffer_zones = {}
+
+        for la, lb in _LAYER_ADJACENCIES:
+            pts_a = np.array(layer_pts.get(la, []), dtype=np.float64)
+            pts_b = np.array(layer_pts.get(lb, []), dtype=np.float64)
+            if len(pts_a) < 3 or len(pts_b) < 3:
+                continue
+
+            # Alpha shape boundaries for both layers
+            bounds_a = compute_alpha_shape(pts_a)
+            bounds_b = compute_alpha_shape(pts_b)
+
+            # Build buffer: points in layer_b near layer_a boundary AND vice versa
+            zone = set()
+            for px, py in pts_b:
+                for boundary in bounds_a:
+                    if _point_to_polygon_distance(px, py, boundary) < tolerance:
+                        zone.add((round(px, 4), round(py, 4)))
+                        break
+            for px, py in pts_a:
+                for boundary in bounds_b:
+                    if _point_to_polygon_distance(px, py, boundary) < tolerance:
+                        zone.add((round(px, 4), round(py, 4)))
+                        break
+
+            if zone:
+                buffer_zones[(la, lb)] = zone
+
+        self._layer_buffer_zones = buffer_zones
+
+    def set_tolerance(self, radius: float):
+        """Update tolerance radius and recompute boundaries + colors."""
+        self._tolerance_radius = max(0.02, min(0.50, radius))
+        self._build_layer_buffer_zones()
+        self._build_point_cloud()
+        self._update_labels()
+        self._plotter.render()
+
+    def set_strict_mode(self, strict: bool):
+        """Toggle strict (no boundary tolerance) vs relaxed mode."""
+        self._strict_mode = strict
         self._build_point_cloud()
         self._update_labels()
         self._plotter.render()
@@ -447,6 +540,7 @@ class SpatialViewerWidget(QWidget):
         res_clusters = {}  # cluster_name -> list of indices (for hover linkage)
         error_extra_indices = set()
         error_label_indices = set()
+        self._tolerated_indices = set()
 
         # Build two color arrays: normal + error-highlighted
         colors_normal = np.zeros((n_res, 3), dtype=np.float32)
@@ -491,9 +585,22 @@ class SpatialViewerWidget(QWidget):
                     colors_error[i] = (0.0, 0.0, 0.0)
                     res_clusters.setdefault("Unlabeled", []).append(i)
                 elif gt_id != pred_id:
-                    colors_error[i] = (1.0, 0.35, 0.1)
-                    error_label_indices.add(i)
-                    res_clusters.setdefault("ERR_LABEL", []).append(i)
+                    # Boundary-aware check: is this in the overlap zone?
+                    pos_key = (round(cell.x, 4), round(cell.y, 4))
+                    tolerated = False
+                    if not self._strict_mode:
+                        la, lb = min(gt_id, pred_id), max(gt_id, pred_id)
+                        zone = self._layer_buffer_zones.get((la, lb), set())
+                        if pos_key in zone:
+                            tolerated = True
+                    if tolerated:
+                        colors_error[i] = get_cluster_color("TOLERATED")
+                        self._tolerated_indices.add(i)
+                        res_clusters.setdefault("TOLERATED", []).append(i)
+                    else:
+                        colors_error[i] = (1.0, 0.35, 0.1)
+                        error_label_indices.add(i)
+                        res_clusters.setdefault("ERR_LABEL", []).append(i)
                 else:
                     colors_error[i] = get_cluster_color(cell.cluster)
                     res_clusters.setdefault(cell.cluster, []).append(i)
@@ -931,7 +1038,7 @@ class SpatialViewerWidget(QWidget):
         if ds is None:
             return
         layer = getattr(self, "_hovered_layer", "Ground Truth")
-        if cluster in ("ERR_POSITION", "ERR_LABEL", "Unlabeled"):
+        if cluster in ("ERR_POSITION", "ERR_LABEL", "TOLERATED", "Unlabeled"):
             r_clusters = getattr(self, "_res_clusters", {})
             indices = r_clusters.get(cluster, [])
             count = len(indices)
@@ -939,6 +1046,8 @@ class SpatialViewerWidget(QWidget):
                 err_type = "Position Error"
             elif cluster == "ERR_LABEL":
                 err_type = "Label Mismatch"
+            elif cluster == "TOLERATED":
+                err_type = "Tolerated Mismatch"
             else:
                 err_type = "No Label"
             self.cluster_hovered.emit(f"[{layer}] {cluster}", count, {"type": err_type, "layer": layer})
