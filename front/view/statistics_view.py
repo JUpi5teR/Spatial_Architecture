@@ -1,4 +1,4 @@
-﻿# coding: utf-8
+# coding: utf-8
 """Statistics 页面 —— 展示每个样本的聚类评价指标柱状图。
 
 指标: ARI, NMI, HS, CS
@@ -259,10 +259,14 @@ class StatisticsViewWidget(QWidget):
                 cell.set_fontsize(10)
         ax_table.set_title("Statistics", fontsize=12, fontweight="bold", pad=12)
 
-        self._figure.tight_layout()
+        # tight_layout() can't handle axes containing a matplotlib table,
+        # so use subplots_adjust() to avoid the UserWarning. The values below
+        # mirror the padding tight_layout would otherwise pick.
+        self._figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.18,
+                                       wspace=0.25)
         self._canvas.draw()
 
-def _draw_placeholder(self, message: str) -> None:
+    def _draw_placeholder(self, message: str) -> None:
         self._figure.clear()
         ax = self._figure.add_subplot(111)
         ax.text(0.5, 0.5, message, transform=ax.transAxes, ha="center", va="center",

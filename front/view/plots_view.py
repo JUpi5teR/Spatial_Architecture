@@ -1,4 +1,4 @@
-﻿# coding: utf-8
+# coding: utf-8
 """Plots 页面 —— 训练过程曲线 (Loss, ARI, NMI, HS, CS)。
 
 读取 train_log 中每个指标的 .csv，按 epoch 绘制折线图。
@@ -143,21 +143,22 @@ class PlotsViewWidget(QWidget):
                 continue
             if df.empty:
                 continue
-            # Pivot if long format
+            # Pivot if long format. Column names may be str or int after
+            # pd.read_csv() / pivot_table(), so always cast before .lower().
             sample_col_key = None
             for c in df.columns:
-                if c.lower().strip() == "sample":
+                if str(c).lower().strip() == "sample":
                     sample_col_key = c
                     break
             if sample_col_key is not None:
-                value_cols = [c for c in df.columns if c.lower().strip() not in ("epoch", "sample")]
+                value_cols = [c for c in df.columns if str(c).lower().strip() not in ("epoch", "sample")]
                 if not value_cols:
                     continue
                 value_col = value_cols[0]
                 df = df.pivot_table(index="epoch", columns=sample_col_key, values=value_col, aggfunc="first")
                 df = df.reset_index()
-            # Collect sample names
-            sample_cols = [c for c in df.columns if c.lower().strip() not in ("epoch",)]
+            # Collect sample names (column names from pivot are typically ints like 151507)
+            sample_cols = [c for c in df.columns if str(c).lower().strip() not in ("epoch",)]
             for sc in sample_cols:
                 all_samples.add(str(sc))
             all_data[metric] = df
@@ -219,7 +220,7 @@ class PlotsViewWidget(QWidget):
         self._figure.tight_layout(rect=[0, 0, 1, 0.97])
         self._canvas.draw()
 
-def _draw_placeholder(self, message: str) -> None:
+    def _draw_placeholder(self, message: str) -> None:
         self._figure.clear()
         ax = self._figure.add_subplot(111)
         ax.text(0.5, 0.5, message, transform=ax.transAxes, ha="center", va="center",

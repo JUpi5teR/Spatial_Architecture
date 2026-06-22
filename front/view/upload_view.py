@@ -1,4 +1,4 @@
-﻿# coding: utf-8
+# coding: utf-8
 
 """Upload Data page - system data entry.
 
@@ -489,7 +489,7 @@ class UploadViewWidget(QWidget):
 
     # ----------------------------------------------------------------
 
-    def _register(self, root: Path, auto_confirm: bool = False) -> None:
+    def _register(self, root: Path) -> None:
         if root is None:
             return
 

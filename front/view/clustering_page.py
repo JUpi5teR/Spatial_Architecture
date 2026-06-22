@@ -1,4 +1,4 @@
-﻿# coding: utf-8
+# coding: utf-8
 """Clustering page - Side-by-Side comparison + Spatial 3D viewer with hover panel."""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-﻿"""Side-by-side image comparison view with zoom, pan, and sync."""
+"""Side-by-side image comparison view with zoom, pan, and sync."""
 from __future__ import annotations
 from typing import List, Optional
 

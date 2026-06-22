@@ -1,4 +1,4 @@
-﻿# coding: utf-8
+# coding: utf-8
 """Notebook workspace - scoped container for all analysis modules."""
 from __future__ import annotations
 

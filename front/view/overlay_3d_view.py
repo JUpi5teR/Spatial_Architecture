@@ -381,8 +381,8 @@ class Overlay3DViewWidget(QWidget):
 
     def _on_view_details(self):
         win = self.window()
-        if win is not None and hasattr(win, "show_mismatched_points_tab"):
-            win.show_mismatched_points_tab()
+        if win is not None and hasattr(win, "show_mismatched_points"):
+            win.show_mismatched_points()
 
     def _update_visibility(self):
         if self._plotter is None:
