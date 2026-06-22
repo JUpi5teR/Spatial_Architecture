@@ -87,16 +87,11 @@ class HoverPanel(QFrame):
         ly.addWidget(self._section_combo)
 
         ly.addWidget(QLabel("Mode:"))
-        self._explore_btn = QPushButton("Explore")
-        self._explore_btn.setCheckable(True)
-        self._explore_btn.setChecked(True)
-        self._explore_btn.clicked.connect(lambda: self._set_mode("explore"))
-        ly.addWidget(self._explore_btn)
-
-        self._analysis_btn = QPushButton("Analysis")
-        self._analysis_btn.setCheckable(True)
-        self._analysis_btn.clicked.connect(lambda: self._set_mode("analysis"))
-        ly.addWidget(self._analysis_btn)
+        self._mode_btn = QPushButton("Explore")
+        self._mode_btn.setCheckable(True)
+        self._mode_btn.setChecked(False)
+        self._mode_btn.clicked.connect(self._toggle_mode)
+        ly.addWidget(self._mode_btn)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
@@ -104,12 +99,11 @@ class HoverPanel(QFrame):
         ly.addWidget(sep)
 
         ly.addWidget(QLabel("View:"))
-        fv = QPushButton("Front View")
-        fv.clicked.connect(lambda: self.view_requested.emit("front"))
-        ly.addWidget(fv)
-        bv = QPushButton("Back View")
-        bv.clicked.connect(lambda: self.view_requested.emit("back"))
-        ly.addWidget(bv)
+        self._view_btn = QPushButton("Front")
+        self._view_btn.setCheckable(True)
+        self._view_btn.setChecked(False)
+        self._view_btn.clicked.connect(self._toggle_view)
+        ly.addWidget(self._view_btn)
 
         self._error_btn = QPushButton("Show Error Points")
         self._error_btn.setCheckable(True)
@@ -164,12 +158,27 @@ class HoverPanel(QFrame):
         self.strict_toggled.emit(checked)
 
     def _set_mode(self, mode):
-        self._explore_btn.setChecked(mode == "explore")
-        self._analysis_btn.setChecked(mode == "analysis")
+        self._mode_btn.setText("Explore" if mode == "explore" else "Analysis")
+        self._mode_btn.setChecked(mode == "analysis")
         self.mode_changed.emit(mode)
 
+    def _toggle_mode(self):
+        if self._mode_btn.isChecked():
+            self._set_mode("analysis")
+        else:
+            self._set_mode("explore")
+
+    def _toggle_view(self):
+        if self._view_btn.isChecked():
+            self._view_btn.setText("Back")
+            self.view_requested.emit("back")
+        else:
+            self._view_btn.setText("Front")
+            self.view_requested.emit("front")
+
     def set_mode(self, mode):
-        self._set_mode(mode)
+        self._mode_btn.setText("Explore" if mode == "explore" else "Analysis")
+        self._mode_btn.setChecked(mode == "analysis")
 
     def set_cluster_info(self, cluster, count, meta):
         self._cluster_info.setText(
@@ -184,6 +193,14 @@ class HoverPanel(QFrame):
         self._section_combo.addItems(section_ids)
         self._section_combo.blockSignals(False)
 
+    def set_current_section(self, section_id):
+        """Select a section without emitting signal."""
+        self._section_combo.blockSignals(True)
+        idx = self._section_combo.findText(section_id)
+        if idx >= 0:
+            self._section_combo.setCurrentIndex(idx)
+        self._section_combo.blockSignals(False)
+
 
 class ClusteringPage(QWidget):
     """Combined clustering page: Side-by-Side + Spatial 3D."""
@@ -196,7 +213,18 @@ class ClusteringPage(QWidget):
         self._current_index = 0
         self._data_root = ""
         self._section_ids = []
+        self._dark = False
         self._build_ui()
+
+    def set_dark(self, dark: bool) -> None:
+        self._dark = dark
+        bg = "#1e1e21" if dark else "#fafafa"
+        fg = "#d0d0d5" if dark else "#1a1a1a"
+        self.setStyleSheet(f"ClusteringPage {{ background-color: {bg}; }}")
+        if self._comparison_view:
+            self._comparison_view.update_theme(dark)
+        if self._spatial_viewer:
+            self._spatial_viewer.set_dark(dark)
 
     def _build_ui(self):
         ly = QVBoxLayout(self)
@@ -241,6 +269,7 @@ class ClusteringPage(QWidget):
 
         # Page 0: Side-by-Side
         self._comparison_view = ComparisonViewWidget()
+        self._comparison_view.section_changed.connect(self._on_sbs_section_changed)
         self._content_stack.addWidget(self._comparison_view)
 
         # Page 1: Spatial 3D
@@ -291,6 +320,11 @@ class ClusteringPage(QWidget):
             self._btn_3d.setChecked(mode == "spatial")
         if mode == "sbs":
             self._content_stack.setCurrentIndex(0)
+            # Show current section in side-by-side
+            if self._section_ids and self._current_index < len(self._section_ids):
+                sid = self._section_ids[self._current_index]
+                self._comparison_view.set_current_section(sid)
+                self._comparison_view.show_overlay_pair(sid)
         else:
             self._content_stack.setCurrentIndex(1)
             if self._spatial_viewer and self._data_root and self._section_ids:
@@ -304,6 +338,11 @@ class ClusteringPage(QWidget):
     def _on_hover_section(self, sid):
         if HAS_SPATIAL and self._data_root:
             self._load_spatial(sid)
+        # Sync side-by-side view
+        if sid in self._section_ids:
+            self._current_index = self._section_ids.index(sid)
+        self._comparison_view.set_current_section(sid)
+        self._comparison_view.show_overlay_pair(sid)
 
     def _on_hover_view(self, view):
         if self._spatial_viewer:
@@ -345,13 +384,24 @@ class ClusteringPage(QWidget):
             first_sid = ids[0]
             self._comparison_view.show_overlay_pair(first_sid)
 
-            # Populate hover panel section combo
+            # Populate section selectors in both views
+            self._comparison_view.set_sections(self._section_ids)
             if self._hover_panel:
                 self._hover_panel.set_sections(self._section_ids)
 
             # Load first section in spatial
             if self._mode == "spatial" and self._spatial_viewer:
                 self._load_spatial(ids[0])
+    def _on_sbs_section_changed(self, sid):
+        """Handle section change from side-by-side view."""
+        if sid in self._section_ids:
+            self._current_index = self._section_ids.index(sid)
+        # Update hover panel section combo
+        if self._hover_panel and sid:
+            self._hover_panel.set_current_section(sid)
+        # Load overlay for the new section
+        self._comparison_view.show_overlay_pair(sid)
+
     def _load_spatial(self, sid):
         if not HAS_SPATIAL or not self._spatial_viewer:
             return

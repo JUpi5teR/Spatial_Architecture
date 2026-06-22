@@ -37,8 +37,23 @@ class PlotsViewWidget(QWidget):
         self._metric = "loss"
         self._smooth = False
         self._loaded = False
+        self._dark = False
 
         self._build_ui()
+
+    def set_dark(self, dark: bool) -> None:
+        self._dark = dark
+        bg = "#1e1e21" if dark else "#fafafa"
+        fg = "#d0d0d5" if dark else "#1a1a1a"
+        self.setStyleSheet(f"PlotsViewWidget {{ background-color: {bg}; }}")
+        for lbl in self.findChildren(QLabel):
+            if lbl.text().startswith("↗"):
+                lbl.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {fg};")
+        if self._figure:
+            self._figure.patch.set_facecolor(bg)
+            for ax in self._figure.axes:
+                ax.set_facecolor("#2a2a2e" if dark else "#ffffff")
+                ax.tick_params(colors=fg)
 
     def _build_ui(self) -> None:
         root_ly = QVBoxLayout(self)

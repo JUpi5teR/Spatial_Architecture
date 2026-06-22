@@ -37,8 +37,26 @@ class StatisticsViewWidget(QWidget):
         self._metric_combo: Optional[QComboBox] = None
         self._metric = "ari"
         self._loaded = False
+        self._dark = False
 
         self._build_ui()
+
+    def set_dark(self, dark: bool) -> None:
+        self._dark = dark
+        bg = "#1e1e21" if dark else "#fafafa"
+        fg = "#d0d0d5" if dark else "#1a1a1a"
+        self.setStyleSheet(f"StatisticsViewWidget {{ background-color: {bg}; }}")
+        for lbl in self.findChildren(QLabel):
+            if lbl.text().startswith("≡"):
+                lbl.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {fg};")
+        if self._figure:
+            self._figure.patch.set_facecolor(bg)
+            for ax in self._figure.axes:
+                ax.set_facecolor("#2a2a2e" if dark else "#ffffff")
+                ax.tick_params(colors=fg)
+                ax.xaxis.label.set_color(fg)
+                ax.yaxis.label.set_color(fg)
+                ax.title.set_color(fg)
 
     def _build_ui(self) -> None:
         root_ly = QVBoxLayout(self)
@@ -134,11 +152,11 @@ class StatisticsViewWidget(QWidget):
         # Detect long format (epoch, sample, metric_value) and pivot to wide
         sample_col_key = None
         for c in df.columns:
-            if c.lower().strip() == "sample":
+            if str(c).lower().strip() == "sample":
                 sample_col_key = c
                 break
         if sample_col_key is not None:
-            value_cols = [c for c in df.columns if c.lower().strip() not in ("epoch", "sample")]
+            value_cols = [c for c in df.columns if str(c).lower().strip() not in ("epoch", "sample")]
             if not value_cols:
                 self._draw_placeholder("No numeric column in CSV")
                 return
@@ -148,7 +166,7 @@ class StatisticsViewWidget(QWidget):
 
         # Get last epoch row for final values
         last_row = df.iloc[-1]
-        sample_cols = [c for c in df.columns if c.lower().strip() not in ("epoch",)]
+        sample_cols = [c for c in df.columns if str(c).lower().strip() not in ("epoch",)]
         if not sample_cols:
             self._draw_placeholder("No sample columns")
             return

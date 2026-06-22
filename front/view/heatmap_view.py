@@ -32,7 +32,14 @@ class HeatmapViewWidget(QWidget):
         self._figure = None
         self._overlay_datasets = []
         self._ari_map = {}
+        self._dark = False
         self._build_ui()
+
+    def set_dark(self, dark: bool) -> None:
+        self._dark = dark
+        bg = "#1e1e21" if dark else "#fafafa"
+        fg = "#d0d0d5" if dark else "#1a1a1a"
+        self.setStyleSheet(f"HeatmapViewWidget {{ background-color: {bg}; }}")
 
     def _build_ui(self):
         ly = QVBoxLayout(self)

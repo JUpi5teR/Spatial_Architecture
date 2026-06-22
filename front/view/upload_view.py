@@ -129,6 +129,7 @@ class UploadViewWidget(QWidget):
         self._structure: Optional[DataStructure] = None
         self._pending_path: Optional[Path] = None
 
+        self._dark = False
         self._build_ui()
 
 
@@ -689,4 +690,5 @@ QTreeWidget::item { padding: 2px 0; }
 QTreeWidget::item:hover { background: #eef3fb; }
 
 """
+
 

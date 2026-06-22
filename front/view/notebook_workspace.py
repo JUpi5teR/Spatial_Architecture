@@ -20,12 +20,12 @@ from utils.logger import logger
 
 from view.sidebar import Sidebar
 from view.upload_view import UploadViewWidget
-from view.comparison_view import ComparisonViewWidget
 from view.clustering_page import ClusteringPage
 from view.statistics_view import StatisticsViewWidget
 from view.plots_view import PlotsViewWidget
 from view.heatmap_view import HeatmapViewWidget
 from view.datasets_view import DatasetsViewWidget
+from view.loading_overlay import LoadingOverlay
 
 SECTION_IDS = [
     "151507", "151508", "151509", "151510",
@@ -140,19 +140,18 @@ class NotebookWorkspace(QWidget):
         self._upload_view = UploadViewWidget(self._path_mgr)
         self._upload_view.folder_registered.connect(self._on_folder_registered)
         self._clustering_page = ClusteringPage()
-        self._comparison_view = self._clustering_page.comparison_view
         self._statistics_view = StatisticsViewWidget(self._path_mgr)
         self._plots_view = PlotsViewWidget(self._path_mgr)
         self._heatmap_view = HeatmapViewWidget(self._path_mgr)
         # REAL datasets page (replaces placeholder)
         self._datasets_view = DatasetsViewWidget(self._ds_mgr, self._notebook)
         self._datasets_view.dataset_activated.connect(self._on_dataset_loaded)
+        self._datasets_view.dataset_renamed.connect(self._on_dataset_renamed)
+        self._datasets_view.dataset_deleted.connect(self._on_dataset_deleted)
         self._empty_widget = self._make_empty('No dataset loaded.\nPlease upload data first.')
         self._page_placeholder = self._make_placeholder('Coming soon')
         # Stack: 0=upload  1=clustering  2=statistics  3=plots
         #        4=heatmaps  5=empty  6=overview  7=datasets
-        #        8=preprocessing  9=marker_genes  10=dimensionality
-        #        11=trajectory  12=comparison
         self._stack.addWidget(self._upload_view)         # 0
         self._stack.addWidget(self._clustering_page)       # 1
         self._stack.addWidget(self._statistics_view)     # 2
@@ -161,17 +160,10 @@ class NotebookWorkspace(QWidget):
         self._stack.addWidget(self._empty_widget)        # 5
         self._stack.addWidget(self._page_placeholder)    # 6
         self._stack.addWidget(self._datasets_view)       # 7  DATASETS
-        self._stack.addWidget(self._page_placeholder)    # 8
-        self._stack.addWidget(self._page_placeholder)    # 9
-        self._stack.addWidget(self._page_placeholder)    # 10
-        self._stack.addWidget(self._page_placeholder)    # 11
-        self._stack.addWidget(self._page_placeholder)    # 12
         self._module_map = {
             'upload': 0, 'clustering': 1, 'statistics': 2,
             'plots': 3, 'heatmaps': 4,
-            'overview': 7, 'datasets': 7, 'preprocessing': 8,
-            'marker_genes': 9, 'dimensionality': 10,
-            'trajectory': 11, 'comparison': 12,
+            'overview': 7, 'datasets': 7,
         }
         body.addWidget(self._stack)
         root.addLayout(body)
@@ -183,6 +175,18 @@ class NotebookWorkspace(QWidget):
         self._status.setFixedHeight(26)
         root.addWidget(self._status)
         self._stack.setCurrentIndex(0)
+
+        # Loading overlay
+        self._loading_overlay = LoadingOverlay(self)
+
+    def show_loading(self):
+        """Show loading overlay, blocking interaction."""
+        self._loading_overlay.show()
+
+    def hide_loading(self):
+        """Hide loading overlay."""
+        self._loading_overlay.hide()
+
     def _make_empty(self, text):
         w = QWidget()
         ly = QVBoxLayout(w)
@@ -214,13 +218,12 @@ class NotebookWorkspace(QWidget):
             if key == 'datasets':
                 logger.info('_on_module_selected: datasets clicked, refreshing')
                 self._datasets_view.refresh()
-                logger.info('_on_module_selected: table rows=%s', self._datasets_view._table.rowCount())
+                logger.info('_on_module_selected: datasets page refreshed')
             self._stack.setCurrentIndex(idx)
             return
         # Analysis modules need data
         if key in ('clustering', 'statistics', 'plots', 'heatmaps',
-                    'preprocessing', 'comparison',
-                    'overview', 'marker_genes', 'dimensionality', 'trajectory'):
+                    'overview'):
             if self._current_dataset is None:
                 self.show_status_message('No dataset loaded. Please upload data first.')
                 self._stack.setCurrentWidget(self._empty_widget)
@@ -276,22 +279,41 @@ class NotebookWorkspace(QWidget):
                 break
 
     def _select_dataset(self, dataset_id):
+        self.show_loading()
         try:
             ds = self._ds_mgr.get_by_id(dataset_id)
             if ds is None:
                 return
             self._current_dataset = ds
+            self._datasets_view.set_current_dataset(ds.id)
             self._load_data(ds)
             self.show_status_message('Loaded: ' + ds.name)
         except Exception as e:
             logger.error('_select_dataset failed: %s', e, exc_info=True)
             self.show_status_message('Failed to load dataset: ' + str(e))
+        finally:
+            self.hide_loading()
+    def _on_dataset_renamed(self, dataset_id, new_name):
+        self._ds_mgr.update_name(dataset_id, new_name)
+        self._refresh_datasets()
+        self._datasets_view.refresh()
+        self._nb_mgr.touch(self._notebook.id)
+        self.notebook_updated.emit()
+
+    def _on_dataset_deleted(self, dataset_id):
+        self._ds_mgr.soft_delete(dataset_id)
+        self._refresh_datasets()
+        self._datasets_view.refresh()
+        self._nb_mgr.touch(self._notebook.id)
+        self.notebook_updated.emit()
+
     # ----------------------------------------------------------------
     # Upload handler
     # ----------------------------------------------------------------
     def _on_folder_registered(self, root):
         if root is None:
                 return
+        self.show_loading()
         try:
             structure = self._path_mgr.structure()
             if structure is None:
@@ -318,6 +340,8 @@ class NotebookWorkspace(QWidget):
         except Exception as e:
             logger.error('Upload failed: %s', e, exc_info=True)
             self.show_status_message('Upload error: ' + str(e))
+        finally:
+            self.hide_loading()
 
     def _load_data(self, ds):
         self.show_status_message('Loading data...')
@@ -439,5 +463,11 @@ class NotebookWorkspace(QWidget):
         from view.main_window import apply_theme
         self._dark = not self._dark
         self._sidebar.set_dark(self._dark)
+        self._clustering_page.set_dark(self._dark)
+        self._statistics_view.set_dark(self._dark)
+        self._plots_view.set_dark(self._dark)
+        self._heatmap_view.set_dark(self._dark)
+        self._datasets_view.set_dark(self._dark)
+        self._upload_view.set_dark(self._dark)
         apply_theme(self._dark)
         self.theme_toggled.emit(self._dark)

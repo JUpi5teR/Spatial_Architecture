@@ -351,6 +351,7 @@ class SpatialViewerWidget(QWidget):
         self._strict_mode: bool = False
         self._layer_buffer_zones: dict = {}
         self._tolerated_indices: set = set()
+        self._camera_lock_observer = None
 
         self._pw = 4.0
         self._ph = 3.0
@@ -370,6 +371,10 @@ class SpatialViewerWidget(QWidget):
         """Clean up VTK resources before closing."""
         try:
             self._teardown_hover()
+        except:
+            pass
+        try:
+            self._teardown_camera_lock()
         except:
             pass
         try:
@@ -681,7 +686,10 @@ class SpatialViewerWidget(QWidget):
             p.camera.SetParallelScale(1.8)
             self._view_front()
             self._setup_hover()
+            # Lock camera: snap back after any user drag
+            self._setup_camera_lock()
         else:
+            self._teardown_camera_lock()
             p.camera.SetParallelProjection(False)
             p.camera.SetViewAngle(40)
             self._teardown_hover()
@@ -720,6 +728,31 @@ class SpatialViewerWidget(QWidget):
                 self._hover_timer = None
         except:
             pass
+
+    def _setup_camera_lock(self):
+        try:
+            import vtk
+            self._camera_lock_observer = self._plotter.iren.interactor.AddObserver(
+                "EndInteractionEvent", self._on_camera_lock
+            )
+        except Exception:
+            self._camera_lock_observer = None
+
+    def _teardown_camera_lock(self):
+        try:
+            if hasattr(self, "_camera_lock_observer") and self._camera_lock_observer is not None:
+                self._plotter.iren.interactor.RemoveObserver(self._camera_lock_observer)
+                self._camera_lock_observer = None
+        except:
+            pass
+
+    def _on_camera_lock(self, obj, event):
+        if self._mode != "analysis":
+            return
+        if self._view_side == "front":
+            self._view_front()
+        else:
+            self._view_back()
 
     def _on_mouse_move(self, obj, event):
         """Queue hover processing - only fires when mouse is still for 140ms."""
@@ -794,15 +827,7 @@ class SpatialViewerWidget(QWidget):
                 layer_name = "Ground Truth"
 
             if 0 <= pid < len(target_ds.cells):
-                if picked_layer == "res" and self._results_dataset is not None:
-                    r_clusters = getattr(self, "_res_clusters", target_ds.clusters)
-                    cluster = target_ds.cells[pid].cluster
-                    for cname, indices in r_clusters.items():
-                        if pid in indices:
-                            cluster = cname
-                            break
-                else:
-                    cluster = target_ds.cells[pid].cluster
+                cluster = target_ds.cells[pid].cluster
 
                 self._hovered_layer = layer_name
                 if cluster != self._hovered_cluster:
@@ -859,8 +884,7 @@ class SpatialViewerWidget(QWidget):
         # ---- Results Layer ----
         if highlight_res:
             res_ds = self._results_dataset if self._results_dataset is not None else ds
-            r_clusters = getattr(self, "_res_clusters", res_ds.clusters)
-            r_indices = set(r_clusters.get(cluster, []))
+            r_indices = set(res_ds.clusters.get(cluster, []))
             rn = len(res_ds.cells)
             res_colors = np.zeros((rn, 3), dtype=np.float32)
             for i in range(rn):
@@ -904,10 +928,9 @@ class SpatialViewerWidget(QWidget):
             cluster_pts = np.array([[ds.cells[i].x, ds.cells[i].y] for i in gt_indices])
             self._add_boundaries(cluster_pts, cluster)
         elif highlight_res:
-            r_clusters2 = getattr(self, "_res_clusters", {})
-            r_idx2 = r_clusters2.get(cluster, [])
+            rd = self._results_dataset if self._results_dataset is not None else ds
+            r_idx2 = rd.clusters.get(cluster, [])
             if r_idx2:
-                rd = self._results_dataset if self._results_dataset is not None else ds
                 cluster_pts = np.array([[rd.cells[i].x, rd.cells[i].y] for i in r_idx2])
                 self._add_boundaries(cluster_pts, cluster)
 
