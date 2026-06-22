@@ -1,4 +1,4 @@
-# coding: utf-8
+﻿# coding: utf-8
 
 """ClustroView main window - root navigation shell.
 
@@ -94,34 +94,7 @@ _LIGHT = {
 
 }
 
-_POPUP_LIGHT = """"""
 
-_POPUP_DARK = """
-QMenu {
-    background: #2a2a2e; border: 1px solid #3a3a3e;
-    padding: 4px; border-radius: 6px;
-}
-QMenu::item {
-    padding: 6px 24px; font-size: 12px; color: #d0d0d5;
-    border-radius: 4px;
-}
-QMenu::item:selected { background: #3a3a50; color: #fff; }
-QMessageBox { background: #2a2a2e; color: #d0d0d5; }
-QMessageBox QLabel { color: #d0d0d5; font-size: 12px; }
-QMessageBox QPushButton {
-    background: #3a3a3e; color: #d0d0d5; border: 1px solid #4a4a4e;
-    border-radius: 4px; padding: 5px 16px; font-size: 11px;
-}
-QMessageBox QPushButton:hover { background: #4a4a50; }
-QDialog { background: #2a2a2e; }
-QDialog QLabel { color: #d0d0d5; }
-QInputDialog { background: #2a2a2e; }
-QInputDialog QLabel { color: #d0d0d5; }
-QInputDialog QLineEdit {
-    background: #1e1e21; color: #d0d0d5; border: 1px solid #3a3a3e;
-    border-radius: 4px; padding: 4px 8px;
-}
-"""
 
 
 
@@ -148,7 +121,6 @@ def apply_theme(dark: bool) -> None:
             pal.setColor(role, QColor(*rgb))
 
     app.setPalette(pal)
-    app.setStyleSheet(_POPUP_DARK if dark else _POPUP_LIGHT)
 
 
 

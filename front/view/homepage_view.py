@@ -1,4 +1,4 @@
-# coding: utf-8
+﻿# coding: utf-8
 """Homepage view - notebook management entry point.
 
 Layout:
@@ -86,6 +86,17 @@ QTabBar::tab {
 }
 QTabBar::tab:selected { color: #1a6bc0; border-bottom: 2px solid #1a6bc0; }
 QTabBar::tab:hover { color: #333; }
+"""
+
+_TAB_STYLE_DARK = """
+QTabWidget::pane { border: none; background: transparent; }
+QTabBar::tab {
+    background: transparent; color: #8a8a90; border: none;
+    padding: 8px 20px; font-size: 13px; font-weight: 600;
+    border-bottom: 2px solid transparent;
+}
+QTabBar::tab:selected { color: #7ab7ef; border-bottom: 2px solid #7ab7ef; }
+QTabBar::tab:hover { color: #d0d0d5; }
 """
 
 
@@ -623,6 +634,7 @@ class DimOverlay(QWidget):
 class HomepageView(QWidget):
 
     notebook_opened = Signal(int)
+    theme_toggled = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -642,12 +654,12 @@ class HomepageView(QWidget):
 
         title_block = QVBoxLayout()
         title_block.setSpacing(2)
-        t = QLabel("ClustroView")
-        t.setStyleSheet(_HOME_TITLE)
-        st = QLabel("Spatial Transcriptomics Analysis Platform")
-        st.setStyleSheet(_HOME_SUBTITLE)
-        title_block.addWidget(t)
-        title_block.addWidget(st)
+        self._home_title_label = QLabel("ClustroView")
+        self._home_title_label.setStyleSheet(_HOME_TITLE)
+        self._home_subtitle_label = QLabel("Spatial Transcriptomics Analysis Platform")
+        self._home_subtitle_label.setStyleSheet(_HOME_SUBTITLE)
+        title_block.addWidget(self._home_title_label)
+        title_block.addWidget(self._home_subtitle_label)
         top.addLayout(title_block)
         top.addStretch()
 
@@ -719,18 +731,21 @@ class HomepageView(QWidget):
         fg = "#d0d0d5" if dark else "#1a1a1a"
         sub_fg = "#8a8a90" if dark else "#888"
         self.setStyleSheet(f"HomepageView {{ background-color: {bg}; }}")
-        for lbl in self.findChildren(QLabel):
-            t = lbl.text()
-            if "Spatial" in t and "Hub" in t:
-                lbl.setStyleSheet(f"font-size: 28px; font-weight: 800; color: {fg};")
-            elif t.startswith("Manage your"):
-                lbl.setStyleSheet(f"font-size: 13px; color: {sub_fg};")
+        if hasattr(self, "_home_title_label"):
+            self._home_title_label.setStyleSheet(f"font-size: 28px; font-weight: 800; color: {fg};")
+        if hasattr(self, "_home_subtitle_label"):
+            self._home_subtitle_label.setStyleSheet(f"font-size: 13px; color: {sub_fg};")
         # Update search box
-        for inp in self.findChildren(QLineEdit):
-            inp.setStyleSheet(
+        if hasattr(self, "_search"):
+            self._search.setStyleSheet(
                 f"QLineEdit {{ background: {'#2a2a2e' if dark else '#fff'};"
                 f" color: {fg}; border: 1px solid {'#3a3a3e' if dark else '#ddd'};"
                 f" border-radius: 6px; padding: 6px 10px; font-size: 12px; }}"
+            )
+        # Update tabs style
+        if hasattr(self, "_tabs"):
+            self._tabs.setStyleSheet(
+                _TAB_STYLE_DARK if dark else _TAB_STYLE
             )
         # Update trash panel
         if hasattr(self, "_trash_panel") and self._trash_panel is not None:
@@ -738,16 +753,30 @@ class HomepageView(QWidget):
                 "QFrame#trashPanel { background: #2a2a2e; border-left: 1px solid #3a3a3e; }" if dark
                 else "QFrame#trashPanel { background: #ffffff; border-left: 1px solid #ddd; }"
             )
+        # Update theme button text
+        if hasattr(self, "_theme_btn"):
+            self._theme_btn.setText("\u2600  Light" if dark else "\u263E  Dark")
 
     def _on_refresh(self, *args):
         self.refresh()
 
     def _toggle_theme(self):
         from view.main_window import apply_theme
-        self._dark = not self._dark
-        apply_theme(self._dark)
-        self.set_dark(self._dark)
-        self._theme_btn.setText("\u2600  Light" if self._dark else "\u263E  Dark")
+        if getattr(self, '_theme_switching', False):
+            return
+        self._theme_switching = True
+        try:
+            self._dark = not self._dark
+            self.setUpdatesEnabled(False)
+            try:
+                apply_theme(self._dark)
+                self.set_dark(self._dark)
+            finally:
+                self.setUpdatesEnabled(True)
+            self.theme_toggled.emit(self._dark)
+            self._theme_btn.setText("\u2600  Light" if self._dark else "\u263E  Dark")
+        finally:
+            self._theme_switching = False
 
     def _show_trash(self):
         if self._trash_panel is None:

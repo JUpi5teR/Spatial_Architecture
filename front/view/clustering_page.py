@@ -1,4 +1,4 @@
-# coding: utf-8
+﻿# coding: utf-8
 """Clustering page - Side-by-Side comparison + Spatial 3D viewer with hover panel."""
 from __future__ import annotations
 
@@ -223,8 +223,11 @@ class ClusteringPage(QWidget):
         self.setStyleSheet(f"ClusteringPage {{ background-color: {bg}; }}")
         if self._comparison_view:
             self._comparison_view.update_theme(dark)
-        if self._spatial_viewer:
-            self._spatial_viewer.set_dark(dark)
+        if self._spatial_viewer and self._spatial_viewer.isVisible():
+            try:
+                self._spatial_viewer.set_dark(dark)
+            except Exception:
+                pass
 
     def _build_ui(self):
         ly = QVBoxLayout(self)

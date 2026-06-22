@@ -1,4 +1,4 @@
-# coding: utf-8
+﻿# coding: utf-8
 
 """Upload Data page - system data entry.
 
@@ -333,6 +333,9 @@ class UploadViewWidget(QWidget):
     # File selection callbacks
 
     # ----------------------------------------------------------------
+
+    def set_dark(self, dark: bool) -> None:
+        self._dark = dark
 
     def _on_select_folder(self) -> None:
 

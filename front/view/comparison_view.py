@@ -1,4 +1,4 @@
-"""Side-by-side image comparison view with zoom, pan, and sync."""
+﻿"""Side-by-side image comparison view with zoom, pan, and sync."""
 from __future__ import annotations
 from typing import List, Optional
 
@@ -72,7 +72,7 @@ class ZoomableImageLabel(QLabel):
         self._pan_start: Optional[QPoint] = None
         self._pan_offset: QPoint = QPoint(0, 0)
         self._drag_active: bool = False
-        self._dark: bool = True
+        self._dark: bool = False
         # Scatter overlay data (in image pixel coordinates)
         self._scatter_x: Optional[np.ndarray] = None
         self._scatter_y: Optional[np.ndarray] = None
@@ -245,7 +245,7 @@ class ImagePanel(QWidget):
 
     def __init__(self, title: str, parent: QWidget | None = None):
         super().__init__(parent)
-        self._dark: bool = True
+        self._dark: bool = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -357,7 +357,7 @@ class ComparisonViewWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self._dark: bool = True
+        self._dark: bool = False
         self._syncing: bool = False
         self._sync_locked: bool = False
 
