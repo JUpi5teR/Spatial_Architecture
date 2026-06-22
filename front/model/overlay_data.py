@@ -153,6 +153,51 @@ def _hires_dim(spatial_dir: Path) -> float:
     return _HIRES_DEFAULT
 
 
+def _read_positions_with_header(pos_path: Path) -> dict[str, tuple[float, float]]:
+    """Read positions from CSV with header row (like Results CSV)."""
+    positions: dict[str, tuple[float, float]] = {}
+    try:
+        df = pd.read_csv(pos_path, dtype=str)
+        # Detect column mapping
+        barcode_col = None
+        in_tissue_col = None
+        px_row_col = None
+        px_col_col = None
+        for col in df.columns:
+            cl = col.strip().lower()
+            if cl in ("barcode", "cell_id", "cell", "spot"):
+                barcode_col = col
+            elif cl == "in_tissue":
+                in_tissue_col = col
+            elif cl in ("pxl_row", "pxl_row_in_fullres", "imagerow"):
+                px_row_col = col
+            elif cl in ("pxl_col", "pxl_col_in_fullres", "imagecol"):
+                px_col_col = col
+        if barcode_col is None:
+            barcode_col = df.columns[0]
+        if in_tissue_col is None:
+            in_tissue_col = df.columns[1] if len(df.columns) > 1 else None
+        if px_row_col is None:
+            px_row_col = df.columns[4] if len(df.columns) > 4 else None
+        if px_col_col is None:
+            px_col_col = df.columns[5] if len(df.columns) > 5 else None
+        if px_row_col is None or px_col_col is None:
+            logger.warning("Cannot find position columns in %s", pos_path)
+            return positions
+        for _, row in df.iterrows():
+            if in_tissue_col:
+                in_tissue = str(row[in_tissue_col]).strip()
+                if in_tissue != "1":
+                    continue
+            barcode = str(row[barcode_col]).strip()
+            px_row = float(row[px_row_col])
+            px_col = float(row[px_col_col])
+            positions[barcode] = (px_row, px_col)
+    except Exception as exc:
+        logger.error("Failed to read positions from %s: %s", pos_path, exc)
+    return positions
+
+
 def _read_positions(pos_path: Path) -> dict[str, tuple[float, float]]:
     positions: dict[str, tuple[float, float]] = {}
     try:
@@ -272,9 +317,17 @@ def load_overlay_dataset(
         pred_map = {}
         has_pred = False
 
+    # Read GT positions from GT CSV
     pos_meta = _read_positions(pos_path)
     hires = _hires_dim(sec_dir / "spatial")
     scale = _read_scale(sec_dir / "spatial")
+
+    # Also read Results positions from Results CSV (for prediction side)
+    res_pos_meta = {}
+    if result_root is not None and result_root.exists():
+        res_pos_path = result_root / section_id / "spatial" / "tissue_positions_list.csv"
+        if res_pos_path.exists():
+            res_pos_meta = _read_positions_with_header(res_pos_path)
 
     cells: list[OverlayCellData] = []
     for barcode, (px_row, px_col) in pos_meta.items():

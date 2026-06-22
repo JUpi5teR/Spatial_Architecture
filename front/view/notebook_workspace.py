@@ -39,7 +39,13 @@ def _check_results_has_csv(res_root):
     for sid in SECTION_IDS:
         sec_dir = res_root / sid
         if sec_dir.is_dir():
+            # Check direct CSV/TSV files and also in spatial/ subfolder
             if list(sec_dir.glob("*.csv")) or list(sec_dir.glob("*.tsv")):
+                return True
+            spatial_dir = sec_dir / "spatial"
+            if spatial_dir.is_dir() and (
+                list(spatial_dir.glob("*.csv")) or list(spatial_dir.glob("*.tsv"))
+            ):
                 return True
     return False
 
@@ -334,7 +340,7 @@ class NotebookWorkspace(QWidget):
             # Push to clustering view
             if self._collection and self._collection.pairs:
                 data_root_str = str(gt_dir) if str(gt_dir) != str(data_root) else str(data_root)
-                self._clustering_page.load_data(self._collection, data_root_str, section_ids)
+                self._clustering_page.load_data(self._collection, data_root_str, section_ids, res_root=str(res_dir))
             else:
                 self._clustering_page.show_no_data()
                 self.show_status_message('No images found in dataset. Check folder structure.')

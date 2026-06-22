@@ -301,7 +301,7 @@ class Overlay3DViewWidget(QWidget):
     def _add_scatter_result(self, ds, z, has_results):
         p = self._plotter
         if not has_results:
-            self._add_scatter_gt(ds, z, prefix="back_gt")
+            # No prediction data: render nothing on back face
             return
         # Render prediction scatter colored by domain (independent of GT)
         from model.overlay_data import get_domain_color

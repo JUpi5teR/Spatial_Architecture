@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 from model.image_manager import ImagePair
 from view.comparison_view import ComparisonViewWidget
 
+from utils.logger import logger
 try:
     from spatial_viewer import SpatialViewerWidget, load_spatial_dataset
     HAS_SPATIAL = True
@@ -47,6 +48,7 @@ class HoverPanel(QFrame):
     section_changed = Signal(str)
     mode_changed = Signal(str)
     view_requested = Signal(str)
+    error_toggled = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,6 +109,12 @@ class HoverPanel(QFrame):
         bv.clicked.connect(lambda: self.view_requested.emit("back"))
         ly.addWidget(bv)
 
+        self._error_btn = QPushButton("Show Error Points")
+        self._error_btn.setCheckable(True)
+        self._error_btn.setChecked(False)
+        self._error_btn.clicked.connect(lambda: self.error_toggled.emit(self._error_btn.isChecked()))
+        ly.addWidget(self._error_btn)
+
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setStyleSheet("border: none; border-top: 1px solid #e0e0e0;")
@@ -153,6 +161,7 @@ class ClusteringPage(QWidget):
         super().__init__(parent)
         self._mode = "sbs"
         self._collection = None
+        self._res_root = None
         self._current_index = 0
         self._data_root = ""
         self._section_ids = []
@@ -218,6 +227,7 @@ class ClusteringPage(QWidget):
             self._hover_panel.section_changed.connect(self._on_hover_section)
             self._hover_panel.mode_changed.connect(self._spatial_viewer.set_mode)
             self._hover_panel.view_requested.connect(self._on_hover_view)
+            self._hover_panel.error_toggled.connect(self._on_error_toggle)
             if hasattr(self._spatial_viewer, 'cluster_hovered'):
                 self._spatial_viewer.cluster_hovered.connect(
                     self._hover_panel.set_cluster_info
@@ -269,25 +279,30 @@ class ClusteringPage(QWidget):
             else:
                 self._spatial_viewer.view_back()
 
+    def _on_error_toggle(self, show):
+        if self._spatial_viewer:
+            self._spatial_viewer.toggle_error_visibility(show)
+
     # ----------------------------------------------------------------
     # Data loading
     # ----------------------------------------------------------------
-    def load_data(self, collection, data_root="", section_ids=None):
+    def load_data(self, collection, data_root="", section_ids=None, res_root=None):
         self._collection = collection
         self._data_root = data_root
+        self._res_root = res_root
         self._section_ids = section_ids or []
+
+        # Pass data roots to comparison view for overlay rendering
+        self._comparison_view.set_data_roots(data_root, res_root or "")
 
         if collection and collection.pairs:
             ids = [p.section_id for p in collection.pairs]
             self._section_ids = ids
             self._current_index = 0
 
-            # Show first image in side-by-side
-            p = collection.pairs[0]
-            if p.pred_missing:
-                self._comparison_view.show_fallback(p)
-            else:
-                self._comparison_view.show_pair(p)
+            # Show first section as overlay (tissue image + scatter points)
+            first_sid = ids[0]
+            self._comparison_view.show_overlay_pair(first_sid)
 
             # Populate hover panel section combo
             if self._hover_panel:
@@ -296,19 +311,28 @@ class ClusteringPage(QWidget):
             # Load first section in spatial
             if self._mode == "spatial" and self._spatial_viewer:
                 self._load_spatial(ids[0])
-
     def _load_spatial(self, sid):
         if not HAS_SPATIAL or not self._spatial_viewer:
             return
+        from spatial_viewer import load_results_dataset
         try:
             ds = load_spatial_dataset(str(self._data_root), sid)
-            if ds:
-                self._spatial_viewer.load_section(ds)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error("load_spatial_dataset failed for %s: %s", sid, e)
+            return
+        if ds is None:
+            logger.warning("load_spatial_dataset returned None for %s (data_root=%s)", sid, self._data_root)
+            return
+        res_ds = None
+        if self._res_root:
+            try:
+                res_ds = load_results_dataset(str(self._res_root), sid)
+            except Exception as e:
+                logger.error("load_results_dataset failed for %s: %s", sid, e)
+        res_info = "%d cells" % len(res_ds.cells) if res_ds else "None"
+        logger.info("3D spatial: %s GT=%d cells, Results=%s", sid, len(ds.cells), res_info)
+        self._spatial_viewer.load_section(ds, results_dataset=res_ds)
 
-    def show_no_data(self):
-        self._comparison_view.show_no_data()
 
     @property
     def comparison_view(self):

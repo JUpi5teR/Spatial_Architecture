@@ -1,4 +1,4 @@
-﻿# coding: utf-8
+# coding: utf-8
 # Build: spatial_viewer.py - PySide6 + PyVista spatial transcriptomics viewer
 
 import numpy as np
@@ -110,6 +110,67 @@ def load_spatial_dataset(data_root: str, section_id: str,
     )
 
 
+def load_results_dataset(results_root: str, section_id: str) -> Optional[SpatialDataset]:
+    sec_dir = Path(results_root) / section_id
+    pos_path = sec_dir / "spatial" / "tissue_positions_list.csv"
+    scale_path = sec_dir / "spatial" / "scalefactors_json.json"
+
+    if not pos_path.exists():
+        return None
+
+    scale = 0.15
+    if scale_path.exists():
+        with open(scale_path) as f:
+            scale = float(json.load(f).get("tissue_hires_scalef", 0.15))
+
+    hires_dim = 2000.0
+    img_path = sec_dir / "spatial" / "tissue_hires_image.png"
+    if img_path.exists():
+        try:
+            import cv2
+            import numpy as np
+            raw = np.fromfile(str(img_path), dtype=np.uint8)
+            im = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+            if im is not None:
+                hires_dim = float(max(im.shape[0], im.shape[1]))
+        except:
+            pass
+
+    positions = {}
+    with open(pos_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            in_tissue = row.get("in_tissue", "0").strip()
+            if in_tissue != "1":
+                continue
+            barcode = row.get("barcode", "").strip()
+            domain = row.get("domain", "").strip()
+            if not barcode or not domain:
+                continue
+            px_row = float(row.get("pxl_row", 0))
+            px_col = float(row.get("pxl_col", 0))
+            positions[barcode] = (px_row, px_col, domain)
+
+    if not positions:
+        return None
+
+    cells = []
+    clusters = defaultdict(list)
+    for barcode, (px_row, px_col, domain) in positions.items():
+        hx = px_col * scale
+        hy = px_row * scale
+        x = (hx / hires_dim) * 4.0 - 2.0
+        y = 1.5 - (hy / hires_dim) * 3.0
+        cells.append(CellData(cell_id=barcode, x=x, y=y, cluster=domain, metadata={}))
+        clusters[domain].append(len(cells) - 1)
+
+    return SpatialDataset(
+        section_id=section_id,
+        cells=cells,
+        clusters=dict(clusters),
+    )
+
+
 # ============================================================
 # ALPHA SHAPE / CONCAVE HULL (SciPy only)
 # ============================================================
@@ -194,9 +255,30 @@ CLUSTER_COLORS = {
     "Layer4": "#1F618D", "Layer5": "#1A5276", "Layer6": "#154360",
     "WM":     "#5D6D7E",
     "ERR_POSITION": "#FF1A1A", "ERR_LABEL": "#FF5A1A",
+    "Unlabeled": "#000000",
 }
 _FALLBACK = ["#008B8B","#008080","#0E6655","#1E90FF","#7B68EE","#6A5ACD",
              "#483D8B","#4B0082","#8E44AD","#1ABC9C","#117A65","#191970"]
+
+def _normalize_label(label: str):
+    """Normalize label strings to comparable numeric IDs.
+    'Layer1' -> 1, '1' -> 1, 'WM' -> 0, '' -> None.
+    """
+    if not label or label.upper() == "NA":
+        return None
+    s = str(label).strip()
+    if s.startswith("Layer"):
+        try:
+            return int(s[5:])
+        except ValueError:
+            pass
+    if s == "WM":
+        return 0
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
 
 def get_cluster_color(name: str) -> tuple:
     h = CLUSTER_COLORS.get(name)
@@ -313,10 +395,6 @@ class SpatialViewerWidget(QWidget):
 
     def load_section(self, dataset: SpatialDataset, results_dataset: Optional[SpatialDataset] = None):
         self._dataset = dataset
-        # Auto-try loading results if not provided
-        if results_dataset is None:
-            results_root = Path(__file__).resolve().parent.parent / "results"
-            results_dataset = load_spatial_dataset(str(results_root), dataset.section_id)
         self._results_dataset = results_dataset
         self._hovered_cluster = None
         self._clear_boundaries()
@@ -352,11 +430,14 @@ class SpatialViewerWidget(QWidget):
         p.add_mesh(
             pdata_gt, scalars="colors", rgb=True,
             point_size=10, render_points_as_spheres=True,
-            opacity=0.75, lighting=False, name="cell_points_gt",
+            opacity=1.0, lighting=False, name="cell_points_gt",
         )
 
         # ---- Front layer: Results (or GT fallback) ----
-        res_ds = self._results_dataset if self._results_dataset is not None else ds
+        if self._results_dataset is None:
+            # No results: render nothing on front face
+            return
+        res_ds = self._results_dataset
         n_res = len(res_ds.cells)
 
         # Build full results point cloud
@@ -367,43 +448,85 @@ class SpatialViewerWidget(QWidget):
         error_extra_indices = set()
         error_label_indices = set()
 
+        # Build two color arrays: normal + error-highlighted
+        colors_normal = np.zeros((n_res, 3), dtype=np.float32)
+        colors_error = np.zeros((n_res, 3), dtype=np.float32)
+
         if self._results_dataset is not None and self._results_dataset is not ds:
-            gt_pos_set = {(c.x, c.y) for c in ds.cells}
-            gt_label_map = {(c.x, c.y): c.cluster for c in ds.cells}
+            # Match by barcode instead of float position to avoid precision errors
+            gt_barcode_set = {c.cell_id for c in ds.cells}
+            gt_label_map = {c.cell_id: _normalize_label(c.cluster) for c in ds.cells}
 
             for i, cell in enumerate(res_ds.cells):
                 pts_res[i] = [cell.x, cell.y, z_res]
-                pos_key = (cell.x, cell.y)
-                if pos_key not in gt_pos_set:
-                    colors_res[i] = (1.0, 0.1, 0.1)
+                barcode = cell.cell_id
+                gt_id = gt_label_map.get(barcode)
+                pred_id = _normalize_label(cell.cluster)
+
+                # Normal color: domain mapped to GT layer color
+                if pred_id is not None and 1 <= pred_id <= 6:
+                    colors_normal[i] = get_cluster_color("Layer" + str(pred_id))
+                elif pred_id == 0:
+                    colors_normal[i] = get_cluster_color("WM")
+                elif pred_id is not None:
+                    colors_normal[i] = get_cluster_color(cell.cluster)
+                else:
+                    colors_normal[i] = (0.0, 0.0, 0.0)
+
+                # Error color: comparison view
+                # Check by barcode: cell present in both datasets?
+                in_gt = barcode in gt_barcode_set
+                if not in_gt:
+                    # Position error: point only exists in results
+                    colors_error[i] = (1.0, 0.1, 0.1)
                     error_extra_indices.add(i)
                     res_clusters.setdefault("ERR_POSITION", []).append(i)
-                elif gt_label_map.get(pos_key) != cell.cluster:
-                    colors_res[i] = (1.0, 0.35, 0.1)
+                elif gt_id is None and pred_id is None:
+                    colors_error[i] = (0.0, 0.0, 0.0)
+                    res_clusters.setdefault("Unlabeled", []).append(i)
+                elif gt_id is None:
+                    colors_error[i] = (0.0, 0.0, 0.0)
+                    res_clusters.setdefault("Unlabeled", []).append(i)
+                elif pred_id is None:
+                    colors_error[i] = (0.0, 0.0, 0.0)
+                    res_clusters.setdefault("Unlabeled", []).append(i)
+                elif gt_id != pred_id:
+                    colors_error[i] = (1.0, 0.35, 0.1)
                     error_label_indices.add(i)
                     res_clusters.setdefault("ERR_LABEL", []).append(i)
                 else:
-                    colors_res[i] = get_cluster_color(cell.cluster)
+                    colors_error[i] = get_cluster_color(cell.cluster)
                     res_clusters.setdefault(cell.cluster, []).append(i)
         else:
             for i, cell in enumerate(res_ds.cells):
                 pts_res[i] = [cell.x, cell.y, z_res]
-                colors_res[i] = get_cluster_color(cell.cluster)
-                res_clusters.setdefault(cell.cluster, []).append(i)
+                pred_id = _normalize_label(cell.cluster)
+                if pred_id is not None and 1 <= pred_id <= 6:
+                    c = get_cluster_color("Layer" + str(pred_id))
+                elif pred_id == 0:
+                    c = get_cluster_color("WM")
+                elif pred_id is not None:
+                    c = get_cluster_color(cell.cluster)
+                else:
+                    c = (0.0, 0.0, 0.0)
+                    res_clusters.setdefault("Unlabeled", []).append(i)
+                colors_normal[i] = c
+                colors_error[i] = c
 
-        # Store cluster mapping and original colors for hover
+        # Store cluster mapping and both color sets
         self._res_clusters = res_clusters
-        self._res_colors_original = colors_res.copy()
+        self._res_colors_normal = colors_normal.copy()
+        self._res_colors_error = colors_error.copy()
 
         pdata_res = pv.PolyData(pts_res)
-        pdata_res["colors"] = colors_res
+        pdata_res["colors"] = colors_normal  # default: normal view
         p.add_mesh(
             pdata_res, scalars="colors", rgb=True,
             point_size=10, render_points_as_spheres=True,
             opacity=0.75, lighting=False, name="cell_points_res",
         )
 
-        # Error overlay markers (opaque, visual only)
+        # Error overlay markers (opaque, shown only when toggle ON)
         if error_extra_indices:
             ee_pts = np.array([[res_ds.cells[i].x, res_ds.cells[i].y, z_res + 0.025] for i in error_extra_indices], dtype=np.float32)
             ee_colors = np.full((len(error_extra_indices), 3), (1.0, 0.1, 0.1), dtype=np.float32)
@@ -412,7 +535,7 @@ class SpatialViewerWidget(QWidget):
             p.add_mesh(
                 pdata_ee, scalars="colors", rgb=True,
                 point_size=12, render_points_as_spheres=True,
-                opacity=1.0, lighting=False, name="cell_points_res_err_extra",
+                opacity=0.0, lighting=False, name="cell_points_res_err_extra",
             )
 
         if error_label_indices:
@@ -423,7 +546,7 @@ class SpatialViewerWidget(QWidget):
             p.add_mesh(
                 pdata_el, scalars="colors", rgb=True,
                 point_size=12, render_points_as_spheres=True,
-                opacity=1.0, lighting=False, name="cell_points_res_err_label",
+                opacity=0.0, lighting=False, name="cell_points_res_err_label",
             )
 
     def _update_labels(self):
@@ -705,20 +828,26 @@ class SpatialViewerWidget(QWidget):
             pass
 
     def _restore_results_base(self):
-        """Restore results base layer to default appearance."""
+        """Restore results base layer to default (normal) appearance."""
         ds = self._dataset
         if ds is None:
             return
         res_ds = self._results_dataset
         if res_ds is not None and res_ds is not ds:
-            saved_colors = getattr(self, "_res_colors_original", None)
+            saved_colors = getattr(self, "_res_colors_normal", None)
             if saved_colors is not None and len(saved_colors) == len(res_ds.cells):
                 r_colors = saved_colors.copy()
             else:
                 rn = len(res_ds.cells)
                 r_colors = np.zeros((rn, 3), dtype=np.float32)
                 for i, cell in enumerate(res_ds.cells):
-                    r_colors[i] = get_cluster_color(cell.cluster)
+                    pred_id = _normalize_label(cell.cluster)
+                    if pred_id is not None and 1 <= pred_id <= 6:
+                        r_colors[i] = get_cluster_color("Layer" + str(pred_id))
+                    elif pred_id == 0:
+                        r_colors[i] = get_cluster_color("WM")
+                    elif pred_id is not None:
+                        r_colors[i] = get_cluster_color(cell.cluster)
             try:
                 actor = self._plotter.actors.get("cell_points_res")
                 if actor is not None:
@@ -730,13 +859,10 @@ class SpatialViewerWidget(QWidget):
             except:
                 pass
         else:
-            n = len(ds.cells)
-            colors = np.zeros((n, 3), dtype=np.float32)
-            for i, cell in enumerate(ds.cells):
-                colors[i] = get_cluster_color(cell.cluster)
+            r_colors = getattr(self, "_res_colors_normal", None)
             try:
                 actor = self._plotter.actors.get("cell_points_res")
-                if actor is not None:
+                if actor is not None and r_colors is not None:
                     actor.GetProperty().SetPointSize(10)
                     actor.GetProperty().SetOpacity(0.75)
                     pdata = actor.GetMapper().GetInput()
@@ -805,11 +931,16 @@ class SpatialViewerWidget(QWidget):
         if ds is None:
             return
         layer = getattr(self, "_hovered_layer", "Ground Truth")
-        if cluster in ("ERR_POSITION", "ERR_LABEL"):
+        if cluster in ("ERR_POSITION", "ERR_LABEL", "Unlabeled"):
             r_clusters = getattr(self, "_res_clusters", {})
             indices = r_clusters.get(cluster, [])
             count = len(indices)
-            err_type = "Position Error" if cluster == "ERR_POSITION" else "Label Mismatch"
+            if cluster == "ERR_POSITION":
+                err_type = "Position Error"
+            elif cluster == "ERR_LABEL":
+                err_type = "Label Mismatch"
+            else:
+                err_type = "No Label"
             self.cluster_hovered.emit(f"[{layer}] {cluster}", count, {"type": err_type, "layer": layer})
             return
         indices = ds.clusters.get(cluster, [])
@@ -837,6 +968,33 @@ class SpatialViewerWidget(QWidget):
 
     def view_back(self):
         self._view_back()
+
+    def toggle_error_visibility(self, show: bool):
+        """Toggle between normal view and error-highlighted view."""
+        p = self._plotter
+        # Swap the main results layer colors
+        try:
+            actor = p.actors.get("cell_points_res")
+            if actor is not None:
+                pdata = actor.GetMapper().GetInput()
+                if show:
+                    colors = getattr(self, "_res_colors_error", None)
+                else:
+                    colors = getattr(self, "_res_colors_normal", None)
+                if colors is not None and len(colors) > 0:
+                    pdata["colors"] = colors
+                    actor.GetMapper().Modified()
+        except:
+            pass
+        # Toggle error overlay visibility
+        for err_name in ("cell_points_res_err_extra", "cell_points_res_err_label"):
+            try:
+                actor = p.actors.get(err_name)
+                if actor is not None:
+                    actor.GetProperty().SetOpacity(1.0 if show else 0.0)
+            except:
+                pass
+        p.render()
 
 
 # ============================================================
