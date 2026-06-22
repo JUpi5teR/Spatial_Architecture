@@ -1,9 +1,10 @@
-.vscode/
+﻿.vscode/
 front/.vscode/
 front/DLPFC_result/
 front/logs/
 front/result/
-front/model/__pycache__/
+main_file/
+logs/
 
 # Python 编译缓存（全局）
 __pycache__/
@@ -17,3 +18,25 @@ ideal front-end image.png
 opencode.txt
 reference/
 dataset/
+resultstrue/
+results/
+
+# 私人配置与密钥
+config/personal.json
+
+# 本地数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 环境变量文件
+.env
+
+paper/
+train_model/
+_clean_sv.py
+_fix_bg2.py
+_fix_bg3.py
+_fix_panel.py
+_integrate.py
+_write_heatmap.py

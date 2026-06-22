@@ -1,10 +1,10 @@
-﻿"""Side-by-side image comparison view with zoom, pan, and sync."""
+"""Side-by-side image comparison view with zoom, pan, and sync."""
 from __future__ import annotations
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import Qt, QPoint, Signal
-from PySide6.QtGui import QImage, QPixmap, QPainter
+from PySide6.QtCore import Qt, QPoint, QPointF, Signal
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QBrush
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -57,7 +57,7 @@ _LABEL_LIGHT = "color: #7f8c8d; font-size: 11px; padding: 2px 8px;"
 
 
 class ZoomableImageLabel(QLabel):
-    """A QLabel that supports zoom, pan, and double-click reset."""
+    """A QLabel that supports zoom, pan, double-click reset, and scatter overlay."""
 
     zoom_changed = Signal(float)
     pan_changed = Signal(QPoint)
@@ -72,6 +72,11 @@ class ZoomableImageLabel(QLabel):
         self._pan_offset: QPoint = QPoint(0, 0)
         self._drag_active: bool = False
         self._dark: bool = True
+        # Scatter overlay data (in image pixel coordinates)
+        self._scatter_x: Optional[np.ndarray] = None
+        self._scatter_y: Optional[np.ndarray] = None
+        self._scatter_colors: Optional[list] = None
+        self._scatter_sizes: Optional[np.ndarray] = None
 
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(
@@ -106,6 +111,10 @@ class ZoomableImageLabel(QLabel):
         self._original_pixmap = None
         self._zoom_factor = 1.0
         self._pan_offset = QPoint(0, 0)
+        self._scatter_x = None
+        self._scatter_y = None
+        self._scatter_colors = None
+        self._scatter_sizes = None
         self.clear()
         self.setText("No Image")
 
@@ -125,6 +134,28 @@ class ZoomableImageLabel(QLabel):
     def set_pan_silent(self, offset: QPoint) -> None:
         self._apply_pan(offset, emit=False)
 
+    def set_scatter_data(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        colors: list,
+        sizes: np.ndarray | None = None,
+    ) -> None:
+        """Store scatter overlay data in image pixel coordinates."""
+        self._scatter_x = np.asarray(x, dtype=np.float64)
+        self._scatter_y = np.asarray(y, dtype=np.float64)
+        self._scatter_colors = colors
+        self._scatter_sizes = sizes
+        self._update_display()
+
+    def clear_scatter(self) -> None:
+        """Remove scatter overlay."""
+        self._scatter_x = None
+        self._scatter_y = None
+        self._scatter_colors = None
+        self._scatter_sizes = None
+        self._update_display()
+
     # ---- Internal ----
 
     def _apply_zoom(self, factor: float, emit: bool = True) -> None:
@@ -142,9 +173,11 @@ class ZoomableImageLabel(QLabel):
     def _update_display(self) -> None:
         if self._original_pixmap is None:
             return
+        ow = self._original_pixmap.width()
+        oh = self._original_pixmap.height()
         scaled = self._original_pixmap.scaled(
-            int(self._original_pixmap.width() * self._zoom_factor),
-            int(self._original_pixmap.height() * self._zoom_factor),
+            int(ow * self._zoom_factor),
+            int(oh * self._zoom_factor),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
@@ -152,6 +185,24 @@ class ZoomableImageLabel(QLabel):
         pm.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pm)
         painter.drawPixmap(self._pan_offset, scaled)
+
+        # Draw scatter points on top of the image
+        if self._scatter_x is not None and len(self._scatter_x) > 0:
+            scale_x = scaled.width() / ow
+            scale_y = scaled.height() / oh
+            base_radius = max(3.0, min(ow, oh) * 0.006)
+
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            for i in range(len(self._scatter_x)):
+                sx = self._scatter_x[i] * scale_x + self._pan_offset.x()
+                sy = self._scatter_y[i] * scale_y + self._pan_offset.y()
+                radius = base_radius * self._zoom_factor
+                radius = max(2.0, min(radius, 14.0))
+                color = self._scatter_colors[i]
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(QColor(*color)))
+                painter.drawEllipse(QPointF(sx, sy), radius, radius)
+
         painter.end()
         self.setPixmap(pm)
 
@@ -185,6 +236,7 @@ class ZoomableImageLabel(QLabel):
         delta = event.angleDelta().y()
         factor = 1.15 if delta > 0 else 1.0 / 1.15
         self._apply_zoom(self._zoom_factor * factor)
+
 
 
 class ImagePanel(QWidget):
@@ -227,21 +279,88 @@ class ImagePanel(QWidget):
         self._title.setText(f"{self._title.text().split(':')[0]}: {filename}")
         self._label.setText(label)
 
+    def show_overlay(
+        self,
+        image: np.ndarray,
+        scatter_x: np.ndarray,
+        scatter_y: np.ndarray,
+        scatter_colors: list,
+        filename: str,
+        label: str = "",
+    ) -> None:
+        """Show image with scatter points overlaid."""
+        self.image_label.set_image(image)
+        self.image_label.set_scatter_data(scatter_x, scatter_y, scatter_colors)
+        self._title.setText(f"{self._title.text().split(':')[0]}: {filename}")
+        self._label.setText(label)
+
     def clear(self) -> None:
         self.image_label.clear_image()
         self._label.setText("")
 
 
-# ---- Comparison View ----
+
+# ---- Helper: load scatter data from spatial datasets ----
+
+# Color palette matching spatial_viewer CLUSTER_COLORS
+_CLUSTER_COLORS = {
+    "Layer1": (93, 173, 226),   # #5DADE2
+    "Layer2": (46, 134, 193),   # #2E86C1
+    "Layer3": (40, 116, 166),   # #2874A6
+    "Layer4": (31, 97, 141),    # #1F618D
+    "Layer5": (26, 82, 118),    # #1A5276
+    "Layer6": (21, 67, 96),     # #154360
+    "WM":     (93, 109, 126),   # #5D6D7E
+    "Unlabeled": (0, 0, 0),     # #000000
+}
+_FALLBACK_RGB = [
+    (0, 139, 139), (0, 128, 128), (14, 102, 85),
+    (30, 144, 255), (123, 104, 238), (106, 90, 205),
+    (72, 61, 139), (75, 0, 130), (142, 68, 173),
+    (26, 188, 156), (17, 122, 101), (25, 25, 112),
+]
+
+def _normalize_label(label):
+    """Normalize label: 'Layer1' -> 1, '1' -> 1, 'WM' -> 0, '' -> None."""
+    if not label or str(label).upper() == "NA":
+        return None
+    s = str(label).strip()
+    if s.startswith("Layer"):
+        try:
+            return int(s[5:])
+        except ValueError:
+            pass
+    if s == "WM":
+        return 0
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
+def _get_color(name):
+    """Get RGB tuple for a cluster name."""
+    c = _CLUSTER_COLORS.get(name)
+    if c is None:
+        c = _FALLBACK_RGB[sum(ord(ch) for ch in str(name)) % len(_FALLBACK_RGB)]
+    return c
+
+
+# ---------------------------------------------------------------------------
+# Comparison View
+# ---------------------------------------------------------------------------
 
 class ComparisonViewWidget(QWidget):
-    """Side-by-side GT vs Prediction image comparison."""
+    """Side-by-side GT vs Prediction image comparison with scatter overlay."""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._dark: bool = True
         self._syncing: bool = False
         self._sync_locked: bool = False
+
+        # Data roots for loading spatial data
+        self._data_root: str = ""
+        self._res_root: str = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -251,29 +370,47 @@ class ComparisonViewWidget(QWidget):
         ctrl_layout = QHBoxLayout()
         ctrl_layout.setContentsMargins(0, 0, 0, 0)
 
-        self._sync_btn = QPushButton("🔓 Lock Sync")
+        self._sync_btn = QPushButton("Lock Sync")
         self._sync_btn.setCheckable(True)
+        self._sync_btn.setChecked(False)
         self._sync_btn.setStyleSheet(_BTN_DARK)
         self._sync_btn.clicked.connect(self._on_sync_toggled)
         ctrl_layout.addWidget(self._sync_btn)
         ctrl_layout.addStretch()
+
         layout.addLayout(ctrl_layout)
 
-        # Panels
+        # Image panels side by side
         panels_layout = QHBoxLayout()
         panels_layout.setContentsMargins(0, 0, 0, 0)
-        panels_layout.setSpacing(0)
+        panels_layout.setSpacing(6)
 
-        # No visible separator border per request.md
+        # Wrap each panel in a QFrame for the border
+        self._gt_frame = QFrame()
+        self._gt_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
+        self._gt_frame.setStyleSheet("QFrame { border: 2px solid #5DADE2; border-radius: 4px; }")
+        gt_frame_layout = QVBoxLayout(self._gt_frame)
+        gt_frame_layout.setContentsMargins(2, 2, 2, 2)
+
         self._gt_panel = ImagePanel("Ground Truth")
-        self._pred_panel = ImagePanel("Prediction")
+        gt_frame_layout.addWidget(self._gt_panel)
 
-        panels_layout.addWidget(self._gt_panel, 1)
-        panels_layout.addWidget(self._pred_panel, 1)
-        layout.addLayout(panels_layout, 1)
+        self._pred_frame = QFrame()
+        self._pred_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
+        self._pred_frame.setStyleSheet("QFrame { border: 2px solid #E74C3C; border-radius: 4px; }")
+        pred_frame_layout = QVBoxLayout(self._pred_frame)
+        pred_frame_layout.setContentsMargins(2, 2, 2, 2)
+
+        self._pred_panel = ImagePanel("Results")
+        pred_frame_layout.addWidget(self._pred_panel)
+
+        panels_layout.addWidget(self._gt_frame, 1)
+        panels_layout.addWidget(self._pred_frame, 1)
+
+        layout.addLayout(panels_layout)
 
         # No-data overlay
-        self._no_data_label = QLabel("No Ground Truth Dataset Found")
+        self._no_data_label = QLabel("No Ground Truth Dataset Found", self)
         self._no_data_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._no_data_label.setStyleSheet(_NO_DATA_DARK)
         self._no_data_label.setVisible(False)
@@ -308,13 +445,13 @@ class ComparisonViewWidget(QWidget):
     def _on_sync_toggled(self, checked: bool) -> None:
         self._sync_locked = checked
         if checked:
-            self._sync_btn.setText("🔒 Sync Locked")
+            self._sync_btn.setText("Sync Locked")
             if not self._gt_panel.image_label.is_default_state():
                 self._gt_panel.image_label.reset_view(emit=False)
             if not self._pred_panel.image_label.is_default_state():
                 self._pred_panel.image_label.reset_view(emit=False)
         else:
-            self._sync_btn.setText("🔓 Lock Sync")
+            self._sync_btn.setText("Lock Sync")
 
     def _on_gt_zoom(self, factor: float) -> None:
         if self._sync_locked and not self._syncing:
@@ -340,16 +477,20 @@ class ComparisonViewWidget(QWidget):
             self._gt_panel.image_label.set_pan_silent(offset)
             self._syncing = False
 
+    # ---- Data roots ----
+
+    def set_data_roots(self, data_root: str, res_root: str) -> None:
+        """Set paths for loading GT and Results spatial data."""
+        self._data_root = data_root
+        self._res_root = res_root
+
     # ---- Public API ----
 
     def show_pair(self, pair: ImagePair) -> None:
-        """Show a GT/Prediction pair.
-
-        When prediction is missing, silently fall back to showing GT on both sides.
-        """
+        """Show a GT/Prediction image pair (fallback: images only, no scatter)."""
         self._no_data_label.setVisible(False)
-        self._gt_panel.setVisible(True)
-        self._pred_panel.setVisible(True)
+        self._gt_frame.setVisible(True)
+        self._pred_frame.setVisible(True)
         self._sync_btn.setVisible(True)
 
         gt_img = load_image(pair.gt_path) if pair.gt_path else None
@@ -362,43 +503,181 @@ class ComparisonViewWidget(QWidget):
             pred_img = load_image(pair.pred_path)
             if pred_img is not None:
                 self._pred_panel.show_image(pred_img, pair.filename, label="Prediction")
+            elif gt_img is not None:
+                self._pred_panel.show_image(gt_img, pair.filename, label="(GT fallback)")
             else:
-                # Prediction image failed to load, show GT fallback
-                if gt_img is not None:
-                    self._pred_panel.show_image(
-                        gt_img, pair.filename, label="(GT fallback)"
-                    )
-                else:
-                    self._pred_panel.clear()
+                self._pred_panel.clear()
         else:
-            # No prediction available: silently show GT on both sides
             if gt_img is not None:
-                self._pred_panel.show_image(
-                    gt_img, pair.filename, label="(GT fallback)"
-                )
+                self._pred_panel.show_image(gt_img, pair.filename, label="(GT fallback)")
             else:
                 self._pred_panel.clear()
 
     def show_fallback(self, pair: ImagePair) -> None:
         """Fallback mode: show GT on both sides."""
         self._no_data_label.setVisible(False)
-        self._gt_panel.setVisible(True)
-        self._pred_panel.setVisible(True)
+        self._gt_frame.setVisible(True)
+        self._pred_frame.setVisible(True)
         self._sync_btn.setVisible(True)
 
         gt_img = load_image(pair.gt_path) if pair.gt_path else None
         if gt_img is not None:
             self._gt_panel.show_image(gt_img, pair.filename, label="Ground Truth")
-            self._pred_panel.show_image(
-                gt_img, pair.filename, label="(GT fallback)"
-            )
+            self._pred_panel.show_image(gt_img, pair.filename, label="(GT fallback)")
         else:
             self._gt_panel.clear()
             self._pred_panel.clear()
 
     def show_no_data(self) -> None:
-        self._gt_panel.setVisible(False)
-        self._pred_panel.setVisible(False)
+        self._gt_frame.setVisible(False)
+        self._pred_frame.setVisible(False)
         self._sync_btn.setVisible(False)
         self._no_data_label.setVisible(True)
         self._no_data_label.setText("No Ground Truth Dataset Found")
+
+    # ---- Overlay (scatter on image) rendering ----
+
+    def show_overlay_pair(self, section_id: str) -> None:
+        """Show GT vs Results as tissue image + scatter points overlay.
+
+        Loads tissue_hires_image.png as background and draws scatter points
+        from the corresponding CSV files.
+        """
+        from pathlib import Path
+        import json, csv, os
+
+        self._no_data_label.setVisible(False)
+        self._gt_frame.setVisible(True)
+        self._pred_frame.setVisible(True)
+        self._sync_btn.setVisible(True)
+
+        # ---- Load GT side ----
+        gt_dir = Path(self._data_root) / section_id
+        gt_img_path = gt_dir / "spatial" / "tissue_hires_image.png"
+        gt_csv_path = gt_dir / "spatial" / "tissue_positions_list.csv"
+        gt_meta_path = gt_dir / "metadata.tsv"
+        gt_scale_path = gt_dir / "spatial" / "scalefactors_json.json"
+
+        gt_image = None
+        if gt_img_path.exists():
+            gt_image = load_image(gt_img_path)
+
+        # Read scale factor
+        scale = 0.15
+        if gt_scale_path.exists():
+            try:
+                with open(gt_scale_path) as f:
+                    scale = float(json.load(f).get("tissue_hires_scalef", 0.15))
+            except Exception:
+                pass
+
+        # Read GT positions (filter in_tissue=1)
+        gt_positions = {}
+        if gt_csv_path.exists():
+            with open(gt_csv_path) as f:
+                for line in f:
+                    parts = line.strip().split(",")
+                    if len(parts) >= 6 and parts[1] == "1":
+                        barcode = parts[0]
+                        px_row, px_col = float(parts[4]), float(parts[5])
+                        gt_positions[barcode] = (px_row * scale, px_col * scale)
+
+        # Read GT metadata for labels
+        gt_labels = {}
+        if gt_meta_path.exists():
+            with open(gt_meta_path, encoding="utf-8") as f:
+                reader = csv.DictReader(f, delimiter="	")
+                for row in reader:
+                    barcode = row.get("barcode", "").strip()
+                    label = row.get("layer_guess_reordered", "").strip()
+                    if barcode and label and label.upper() != "NA":
+                        gt_labels[barcode] = label
+
+        # Build GT scatter data
+        gt_sx, gt_sy, gt_colors = [], [], []
+        for barcode, (hx, hy) in gt_positions.items():
+            label = gt_labels.get(barcode, "")
+            if not label:
+                continue
+            gt_sx.append(hy)  # px_col * scale -> image x
+            gt_sy.append(hx)  # px_row * scale -> image y
+            gt_colors.append(_get_color(label))
+
+        gt_sx = np.array(gt_sx, dtype=np.float64)
+        gt_sy = np.array(gt_sy, dtype=np.float64)
+
+        # Show GT side
+        if gt_image is not None and len(gt_sx) > 0:
+            self._gt_panel.show_overlay(
+                gt_image, gt_sx, gt_sy, gt_colors,
+                filename=section_id, label=f"Ground Truth ({len(gt_sx)} cells)"
+            )
+        elif gt_image is not None:
+            self._gt_panel.show_image(gt_image, section_id, label="Ground Truth (no data)")
+        else:
+            self._gt_panel.clear()
+
+        # ---- Load Results side ----
+        res_dir = Path(self._res_root) / section_id if self._res_root else None
+        res_csv_path = res_dir / "spatial" / "tissue_positions_list.csv" if res_dir else None
+
+        res_sx, res_sy, res_colors = [], [], []
+        res_has_data = False
+
+        if res_csv_path and res_csv_path.exists():
+            with open(res_csv_path) as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    in_tissue = row.get("in_tissue", "0").strip()
+                    if in_tissue != "1":
+                        continue
+                    barcode = row.get("barcode", "").strip()
+                    domain = row.get("domain", "").strip()
+                    if not barcode:
+                        continue
+                    px_row = float(row.get("pxl_row", 0))
+                    px_col = float(row.get("pxl_col", 0))
+                    hx = px_row * scale  # image y
+                    hy = px_col * scale  # image x
+
+                    if domain:
+                        # Map domain to layer color
+                        norm = _normalize_label(domain)
+                        if norm is not None:
+                            if norm == 0:
+                                color = _get_color("WM")
+                            else:
+                                color = _get_color(f"Layer{norm}")
+                        else:
+                            color = _get_color(domain)
+                    else:
+                        color = _get_color("Unlabeled")
+
+                    res_sx.append(hy)  # px_col * scale -> image x
+                    res_sy.append(hx)  # px_row * scale -> image y
+                    res_colors.append(color)
+
+            res_sx = np.array(res_sx, dtype=np.float64)
+            res_sy = np.array(res_sy, dtype=np.float64)
+            res_has_data = len(res_sx) > 0
+
+        # Show Results side
+        if res_has_data:
+            # Use GT image as background for results side too
+            bg_img = gt_image if gt_image is not None else (
+                load_image(gt_img_path) if gt_img_path.exists() else None
+            )
+            if bg_img is not None:
+                self._pred_panel.show_overlay(
+                    bg_img, res_sx, res_sy, res_colors,
+                    filename=section_id, label=f"Results ({len(res_sx)} cells)"
+                )
+            else:
+                self._pred_panel.clear()
+        else:
+            # No results data: show GT image without scatter
+            if gt_image is not None:
+                self._pred_panel.show_image(gt_image, section_id, label="(no Results data)")
+            else:
+                self._pred_panel.clear()
+

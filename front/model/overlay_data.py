@@ -37,6 +37,22 @@ _FALLBACK_COLORS = [
     "#8E44AD", "#1ABC9C", "#117A65", "#191970",
 ]
 
+# Prediction/domain color palette - warm family (orange/red/pink)
+_DOMAIN_COLORS = {
+    "1": "#E67E22",
+    "2": "#E74C3C",
+    "3": "#F39C12",
+    "4": "#D35400",
+    "5": "#C0392B",
+    "6": "#F1C40F",
+    "7": "#A93226",
+    "8": "#E59866",
+    "9": "#CB4335",
+    "10": "#F5B041",
+    "0": "#7F8C8D",
+    "WM": "#7F8C8D",
+}
+
 ERROR_RED_BRIGHT = "#FF0000"
 ERROR_ORANGE_RED = "#FF4500"
 
@@ -47,6 +63,15 @@ def get_layer_color(layer_name: str) -> str:
     if not layer_name or layer_name == "Unknown":
         return "#BDBDBD"
     h = sum(ord(c) for c in layer_name) % len(_FALLBACK_COLORS)
+    return _FALLBACK_COLORS[h]
+
+
+def get_domain_color(domain_label: str) -> str:
+    if domain_label in _DOMAIN_COLORS:
+        return _DOMAIN_COLORS[domain_label]
+    if not domain_label or domain_label == "Unknown":
+        return "#BDBDBD"
+    h = sum(ord(c) for c in domain_label) % len(_FALLBACK_COLORS)
     return _FALLBACK_COLORS[h]
 
 
@@ -118,12 +143,59 @@ def _hires_dim(spatial_dir: Path) -> float:
     if img_path.exists():
         try:
             import cv2
-            im = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+            import numpy as np
+            raw = np.fromfile(str(img_path), dtype=np.uint8)
+            im = cv2.imdecode(raw, cv2.IMREAD_COLOR)
             if im is not None:
                 return float(max(im.shape[0], im.shape[1]))
         except Exception:
             pass
     return _HIRES_DEFAULT
+
+
+def _read_positions_with_header(pos_path: Path) -> dict[str, tuple[float, float]]:
+    """Read positions from CSV with header row (like Results CSV)."""
+    positions: dict[str, tuple[float, float]] = {}
+    try:
+        df = pd.read_csv(pos_path, dtype=str)
+        # Detect column mapping
+        barcode_col = None
+        in_tissue_col = None
+        px_row_col = None
+        px_col_col = None
+        for col in df.columns:
+            cl = col.strip().lower()
+            if cl in ("barcode", "cell_id", "cell", "spot"):
+                barcode_col = col
+            elif cl == "in_tissue":
+                in_tissue_col = col
+            elif cl in ("pxl_row", "pxl_row_in_fullres", "imagerow"):
+                px_row_col = col
+            elif cl in ("pxl_col", "pxl_col_in_fullres", "imagecol"):
+                px_col_col = col
+        if barcode_col is None:
+            barcode_col = df.columns[0]
+        if in_tissue_col is None:
+            in_tissue_col = df.columns[1] if len(df.columns) > 1 else None
+        if px_row_col is None:
+            px_row_col = df.columns[4] if len(df.columns) > 4 else None
+        if px_col_col is None:
+            px_col_col = df.columns[5] if len(df.columns) > 5 else None
+        if px_row_col is None or px_col_col is None:
+            logger.warning("Cannot find position columns in %s", pos_path)
+            return positions
+        for _, row in df.iterrows():
+            if in_tissue_col:
+                in_tissue = str(row[in_tissue_col]).strip()
+                if in_tissue != "1":
+                    continue
+            barcode = str(row[barcode_col]).strip()
+            px_row = float(row[px_row_col])
+            px_col = float(row[px_col_col])
+            positions[barcode] = (px_row, px_col)
+    except Exception as exc:
+        logger.error("Failed to read positions from %s: %s", pos_path, exc)
+    return positions
 
 
 def _read_positions(pos_path: Path) -> dict[str, tuple[float, float]]:
@@ -149,6 +221,10 @@ def _load_results_labels(result_root: Path, section_id: str) -> dict[str, str]:
         return {}
     data_files = list(result_dir.glob("*.csv")) + list(result_dir.glob("*.tsv"))
     if not data_files:
+        spatial_dir = result_dir / "spatial"
+        if spatial_dir.is_dir():
+            data_files = list(spatial_dir.glob("*.csv")) + list(spatial_dir.glob("*.tsv"))
+    if not data_files:
         return {}
     data_path = data_files[0]
     logger.info("Loading results from %s", data_path)
@@ -163,7 +239,7 @@ def _load_results_labels(result_root: Path, section_id: str) -> dict[str, str]:
             cl = col.strip().lower()
             if cl in ("barcode", "cell_id", "cell", "spot"):
                 barcode_col = col
-            elif cl in ("prediction", "label", "cluster", "graphbased", "pred", "pred_label", "predict"):
+            elif cl in ("prediction", "label", "cluster", "graphbased", "pred", "pred_label", "predict", "domain"):
                 label_col = col
         if barcode_col is None:
             barcode_col = df.columns[0]
@@ -241,9 +317,17 @@ def load_overlay_dataset(
         pred_map = {}
         has_pred = False
 
+    # Read GT positions from GT CSV
     pos_meta = _read_positions(pos_path)
     hires = _hires_dim(sec_dir / "spatial")
     scale = _read_scale(sec_dir / "spatial")
+
+    # Also read Results positions from Results CSV (for prediction side)
+    res_pos_meta = {}
+    if result_root is not None and result_root.exists():
+        res_pos_path = result_root / section_id / "spatial" / "tissue_positions_list.csv"
+        if res_pos_path.exists():
+            res_pos_meta = _read_positions_with_header(res_pos_path)
 
     cells: list[OverlayCellData] = []
     for barcode, (px_row, px_col) in pos_meta.items():
