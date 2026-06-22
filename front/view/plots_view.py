@@ -37,6 +37,7 @@ class PlotsViewWidget(QWidget):
         self._metric = "loss"
         self._smooth = False
         self._loaded = False
+        self._dark = False
 
         self._build_ui()
 
@@ -90,6 +91,41 @@ class PlotsViewWidget(QWidget):
     def _on_smooth_toggled(self, checked: bool) -> None:
         self._smooth = checked
         self._draw()
+
+    # ----------------------------------------------------------------
+    # Theme
+    # ----------------------------------------------------------------
+    def set_dark(self, dark: bool) -> None:
+        self._dark = bool(dark)
+        if self._loaded:
+            self._draw()
+        else:
+            if self._figure is not None:
+                self._figure.clear()
+                self._figure.patch.set_facecolor(
+                    "#1e1e21" if self._dark else "#ffffff"
+                )
+                if self._canvas is not None:
+                    self._canvas.draw()
+
+    def _apply_theme(self, ax) -> None:
+        if self._dark:
+            fg = "#d0d0d5"
+            self._figure.patch.set_facecolor("#1e1e21")
+            ax.set_facecolor("#1e1e21")
+        else:
+            fg = "#1a1a1a"
+            self._figure.patch.set_facecolor("#ffffff")
+            ax.set_facecolor("#ffffff")
+        try:
+            ax.tick_params(colors=fg, labelsize=6)
+            for spine in ax.spines.values():
+                spine.set_color(fg)
+            ax.title.set_color(fg)
+            ax.xaxis.label.set_color(fg)
+            ax.yaxis.label.set_color(fg)
+        except Exception:
+            pass
 
     # ----------------------------------------------------------------
     # Chart drawing
@@ -179,6 +215,7 @@ class PlotsViewWidget(QWidget):
             ax.tick_params(labelsize=6)
             ax.grid(alpha=0.2)
             ax.set_xlim(left=0)
+            self._apply_theme(ax)
 
         # Add single legend above all subplots
         handles = []
@@ -190,16 +227,26 @@ class PlotsViewWidget(QWidget):
                               ncol=len(handles), fontsize=8,
                               bbox_to_anchor=(0.5, 1.01))
 
+        suptitle_color = "#f5f5f7" if self._dark else "#1a1a1a"
         self._figure.suptitle("Training Curves - All Samples",
-                             fontsize=14, fontweight="bold", y=1.03)
+                             fontsize=14, fontweight="bold", y=1.03,
+                             color=suptitle_color)
         self._figure.tight_layout(rect=[0, 0, 1, 0.97])
         self._canvas.draw()
 
-def _draw_placeholder(self, message: str) -> None:
+    def _draw_placeholder(self, message: str) -> None:
         self._figure.clear()
         ax = self._figure.add_subplot(111)
+        if self._dark:
+            self._figure.patch.set_facecolor("#1e1e21")
+            ax.set_facecolor("#1e1e21")
+            msg_color = "#aaaaaa"
+        else:
+            self._figure.patch.set_facecolor("#ffffff")
+            ax.set_facecolor("#ffffff")
+            msg_color = "#888888"
         ax.text(0.5, 0.5, message, transform=ax.transAxes, ha="center", va="center",
-                fontsize=16, color="#888")
+                fontsize=16, color=msg_color)
         ax.set_xticks([])
         ax.set_yticks([])
         self._figure.tight_layout()

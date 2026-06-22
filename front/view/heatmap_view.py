@@ -32,6 +32,7 @@ class HeatmapViewWidget(QWidget):
         self._figure = None
         self._overlay_datasets = []
         self._ari_map = {}
+        self._dark = False
         self._build_ui()
 
     def _build_ui(self):
@@ -66,6 +67,35 @@ class HeatmapViewWidget(QWidget):
     def set_ari_map(self, ari_map):
         self._ari_map = ari_map
 
+    # ----------------------------------------------------------------
+    # Theme
+    # ----------------------------------------------------------------
+    def set_dark(self, dark: bool) -> None:
+        self._dark = bool(dark)
+        if self._overlay_datasets:
+            self._draw()
+        else:
+            self._draw_placeholder("No overlay data available")
+
+    def _apply_theme(self, ax) -> None:
+        if self._dark:
+            fg = "#d0d0d5"
+            self._figure.patch.set_facecolor("#1e1e21")
+            ax.set_facecolor("#1e1e21")
+        else:
+            fg = "#1a1a1a"
+            self._figure.patch.set_facecolor("#ffffff")
+            ax.set_facecolor("#ffffff")
+        try:
+            ax.tick_params(colors=fg, labelsize=7)
+            for spine in ax.spines.values():
+                spine.set_color(fg)
+            ax.title.set_color(fg)
+            ax.xaxis.label.set_color(fg)
+            ax.yaxis.label.set_color(fg)
+        except Exception:
+            pass
+
     def _draw(self):
         datasets = self._overlay_datasets
         if not datasets:
@@ -81,6 +111,7 @@ class HeatmapViewWidget(QWidget):
         for idx, ds in enumerate(datasets):
             ax = self._figure.add_subplot(nrows, ncols, idx + 1)
             self._draw_single_confusion(ax, ds)
+            self._apply_theme(ax)
 
         self._figure.tight_layout(pad=3.0, h_pad=2.5, w_pad=2.5)
         self._canvas.draw()
@@ -155,8 +186,16 @@ class HeatmapViewWidget(QWidget):
     def _draw_placeholder(self, message):
         self._figure.clear()
         ax = self._figure.add_subplot(111)
+        if self._dark:
+            self._figure.patch.set_facecolor("#1e1e21")
+            ax.set_facecolor("#1e1e21")
+            msg_color = "#aaaaaa"
+        else:
+            self._figure.patch.set_facecolor("#ffffff")
+            ax.set_facecolor("#ffffff")
+            msg_color = "#888888"
         ax.text(0.5, 0.5, message, transform=ax.transAxes, ha="center", va="center",
-                fontsize=16, color="#888")
+                fontsize=16, color=msg_color)
         ax.set_xticks([])
         ax.set_yticks([])
         self._figure.tight_layout()

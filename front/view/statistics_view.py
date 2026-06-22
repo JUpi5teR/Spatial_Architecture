@@ -37,6 +37,7 @@ class StatisticsViewWidget(QWidget):
         self._metric_combo: Optional[QComboBox] = None
         self._metric = "ari"
         self._loaded = False
+        self._dark = False
 
         self._build_ui()
 
@@ -105,6 +106,43 @@ class StatisticsViewWidget(QWidget):
             return
         self._metric = text.strip().lower()
         self._draw()
+
+    # ----------------------------------------------------------------
+    # Theme
+    # ----------------------------------------------------------------
+    def set_dark(self, dark: bool) -> None:
+        self._dark = bool(dark)
+        if self._loaded:
+            self._draw()
+        else:
+            # Repaint the placeholder area with the new background.
+            if self._figure is not None:
+                self._figure.clear()
+                self._figure.patch.set_facecolor(
+                    "#1e1e21" if self._dark else "#ffffff"
+                )
+                if self._canvas is not None:
+                    self._canvas.draw()
+
+    def _apply_theme(self, ax) -> None:
+        """Apply current theme to the given axes."""
+        if self._dark:
+            fg = "#d0d0d5"
+            self._figure.patch.set_facecolor("#1e1e21")
+            ax.set_facecolor("#1e1e21")
+        else:
+            fg = "#1a1a1a"
+            self._figure.patch.set_facecolor("#ffffff")
+            ax.set_facecolor("#ffffff")
+        try:
+            ax.tick_params(colors=fg)
+            for spine in ax.spines.values():
+                spine.set_color(fg)
+            ax.title.set_color(fg)
+            ax.xaxis.label.set_color(fg)
+            ax.yaxis.label.set_color(fg)
+        except Exception:
+            pass
 
     # ----------------------------------------------------------------
     # Chart drawing
@@ -201,6 +239,7 @@ class StatisticsViewWidget(QWidget):
         ax.set_title(f"{self._metric.upper()} - Final Epoch", fontsize=14, fontweight="bold")
         ax.legend(fontsize=10)
         ax.grid(axis="y", alpha=0.3)
+        self._apply_theme(ax)
 
         # Right: statistics table
         ax_table = self._figure.add_subplot(gs[0, 1])
@@ -224,20 +263,33 @@ class StatisticsViewWidget(QWidget):
         table.set_fontsize(9)
         table.scale(1.0, 1.5)
         for key, cell in table.get_celld().items():
-            cell.set_edgecolor("#ddd")
+            cell.set_edgecolor("#555" if self._dark else "#ddd")
             if key[0] == 0:
-                cell.set_facecolor("#e8e8e8")
+                cell.set_facecolor("#3a3a3d" if self._dark else "#e8e8e8")
                 cell.set_fontsize(10)
-        ax_table.set_title("Statistics", fontsize=12, fontweight="bold", pad=12)
+                cell.set_text_props(color="#f5f5f7" if self._dark else "#1a1a1a")
+            else:
+                cell.set_text_props(color="#d0d0d5" if self._dark else "#333333")
+        self._apply_theme(ax_table)
+        ax_table.set_title("Statistics", fontsize=12, fontweight="bold", pad=12,
+                           color="#f5f5f7" if self._dark else "#1a1a1a")
 
         self._figure.tight_layout()
         self._canvas.draw()
 
-def _draw_placeholder(self, message: str) -> None:
+    def _draw_placeholder(self, message: str) -> None:
         self._figure.clear()
         ax = self._figure.add_subplot(111)
+        if self._dark:
+            self._figure.patch.set_facecolor("#1e1e21")
+            ax.set_facecolor("#1e1e21")
+            msg_color = "#aaaaaa"
+        else:
+            self._figure.patch.set_facecolor("#ffffff")
+            ax.set_facecolor("#ffffff")
+            msg_color = "#888888"
         ax.text(0.5, 0.5, message, transform=ax.transAxes, ha="center", va="center",
-                fontsize=16, color="#888")
+                fontsize=16, color=msg_color)
         ax.set_xticks([])
         ax.set_yticks([])
         self._figure.tight_layout()

@@ -31,73 +31,193 @@ class SpatialDataset:
     panel_w: float = 4.0
     panel_h: float = 3.0
 
+def _read_predictions_from_results(results_dir: Path, section_id: str) -> dict[str, str]:
+    """Read per-barcode prediction labels from results CSV.
+
+    Returns {barcode: "Domain<id>"} mapping, or empty dict on failure.
+    Sentinels like -1 are treated as "Unknown" and excluded from the
+    cluster-coloring surface.
+    """
+    candidates = [
+        results_dir / section_id / "spatial" / "tissue_positions_list.csv",
+        results_dir / section_id / "metadata.tsv",
+    ]
+    csv_path: Optional[Path] = None
+    for cand in candidates:
+        if cand.is_file():
+            csv_path = cand
+            break
+    if csv_path is None:
+        return {}
+
+    try:
+        sep = "\t" if csv_path.suffix == ".tsv" else ","
+        with open(csv_path, encoding="utf-8") as f:
+            reader = csv.DictReader(f, delimiter=sep)
+            if not reader.fieldnames:
+                return {}
+            barcode_col: Optional[str] = None
+            label_col: Optional[str] = None
+            for col in reader.fieldnames:
+                cl = col.strip().lower()
+                if barcode_col is None and cl in ("barcode", "cell_id", "cell", "spot"):
+                    barcode_col = col
+                elif label_col is None and cl in (
+                    "pred", "prediction", "label", "cluster",
+                    "graphbased", "pred_label", "predict", "domain",
+                ):
+                    label_col = col
+            if barcode_col is None or label_col is None:
+                return {}
+            result: dict[str, str] = {}
+            for row in reader:
+                b = str(row.get(barcode_col, "")).strip()
+                l = str(row.get(label_col, "")).strip()
+                if not b or b.lower() == "nan" or not l or l.lower() == "nan":
+                    continue
+                # Skip sentinels (-1, NA) -> skip the cell
+                try:
+                    if int(float(l)) < 0:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+                if l.startswith("Domain"):
+                    result[b] = l
+                else:
+                    result[b] = f"Domain{l}"
+            return result
+    except Exception:
+        return {}
+
+
 def load_spatial_dataset(data_root: str, section_id: str,
-                         gt_column: str = "layer_guess_reordered") -> Optional[SpatialDataset]:
-    sec_dir = Path(data_root) / section_id
+                         gt_column: str = "layer_guess_reordered",
+                         results_dir: Optional[str] = None,
+                         pred_mode: bool = False) -> Optional[SpatialDataset]:
+    """Load a SpatialDataset for a single section.
+
+    Args:
+        data_root: Path to the section's data folder (contains metadata.tsv
+            and spatial/).
+        section_id: Section identifier (subfolder name under data_root).
+        gt_column: Column in metadata.tsv to use as cluster label.
+        results_dir: Optional path to the Results root (e.g. main_file/Results).
+            When provided, prediction labels are read from
+            <results_dir>/<section_id>/spatial/tissue_positions_list.csv
+            (column "pred") and used as the cluster label of each cell
+            instead of the GT metadata.
+        pred_mode: When True, the function treats results_dir as the
+            primary data source and falls back to data_root if results
+            data is not available. Use this when building a results
+            SpatialDataset.
+
+    Returns SpatialDataset or None if required files are missing.
+    """
+    # Choose which folder to read positions / metadata from
+    effective_root: Path
+    if pred_mode and results_dir:
+        candidate = Path(results_dir) / section_id
+        if (candidate / "spatial" / "tissue_positions_list.csv").exists():
+            effective_root = candidate
+        else:
+            effective_root = Path(data_root) / section_id
+    else:
+        effective_root = Path(data_root) / section_id
+
+    sec_dir = effective_root
     meta_path = sec_dir / "metadata.tsv"
     pos_path = sec_dir / "spatial" / "tissue_positions_list.csv"
     scale_path = sec_dir / "spatial" / "scalefactors_json.json"
 
-    if not meta_path.exists() or not pos_path.exists():
+    if not pos_path.exists():
         return None
 
     # Read scale
     scale = 0.15
     if scale_path.exists():
-        with open(scale_path) as f:
-            scale = float(json.load(f).get("tissue_hires_scalef", 0.15))
+        try:
+            with open(scale_path) as f:
+                scale = float(json.load(f).get("tissue_hires_scalef", 0.15))
+        except Exception:
+            pass
 
     # Read hires dim
     hires_dim = 2000.0
     img_path = sec_dir / "spatial" / "tissue_hires_image.png"
     if img_path.exists():
         try:
-            import cv2, numpy as np
+            import cv2
             raw = np.fromfile(str(img_path), dtype=np.uint8)
             im = cv2.imdecode(raw, cv2.IMREAD_COLOR)
             if im is not None:
                 hires_dim = float(max(im.shape[0], im.shape[1]))
-        except:
+        except Exception:
             pass
 
     # Read positions (filter in_tissue=1)
-    positions = {}
+    positions: dict[str, tuple[float, float]] = {}
     with open(pos_path) as f:
         for line in f:
             parts = line.strip().split(",")
             if len(parts) >= 6 and parts[1] == "1":
                 barcode = parts[0]
-                px_row, px_col = float(parts[4]), float(parts[5])
+                try:
+                    px_row, px_col = float(parts[4]), float(parts[5])
+                except ValueError:
+                    continue
                 positions[barcode] = (px_row, px_col)
 
-    # Read metadata
-    meta_rows = []
-    with open(meta_path, encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        fieldnames = reader.fieldnames or []
-        for row in reader:
-            meta_rows.append(row)
+    # Read metadata if available
+    meta_rows: list[dict] = []
+    fieldnames: list[str] = []
+    if meta_path.exists():
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                reader = csv.DictReader(f, delimiter="\t")
+                fieldnames = list(reader.fieldnames or [])
+                for row in reader:
+                    meta_rows.append(row)
+        except Exception:
+            meta_rows = []
+
+    # Build barcode -> GT label map (from metadata)
+    gt_map: dict[str, str] = {}
+    for row in meta_rows:
+        barcode = str(row.get("barcode", "")).strip()
+        if not barcode or barcode.lower() == "nan":
+            continue
+        gt_val = str(row.get(gt_column, "")).strip()
+        if gt_val and gt_val.upper() != "NA":
+            gt_map[barcode] = gt_val
+
+    # Build barcode -> prediction label map (from results)
+    pred_map: dict[str, str] = {}
+    if pred_mode and results_dir:
+        pred_map = _read_predictions_from_results(Path(results_dir), section_id)
 
     # Build cells
-    cells = []
-    clusters = defaultdict(list)
-    for i, row in enumerate(meta_rows):
-        barcode = row.get("barcode", "").strip()
-        if barcode not in positions:
-            continue
-        cluster = row.get(gt_column, "").strip()
-        if not cluster or cluster.upper() == "NA":
-            continue
-
-        px_row, px_col = positions[barcode]
+    cells: list[CellData] = []
+    clusters: dict[str, list[int]] = defaultdict(list)
+    for barcode, (px_row, px_col) in positions.items():
         hx = px_col * scale
         hy = px_row * scale
         x = (hx / hires_dim) * 4.0 - 2.0
         y = 1.5 - (hy / hires_dim) * 3.0
 
-        metadata = {k: row.get(k, "") for k in fieldnames if k not in ("barcode", gt_column)}
+        if pred_mode:
+            cluster = pred_map.get(barcode, "")
+            gt_label = gt_map.get(barcode, "")
+        else:
+            cluster = gt_map.get(barcode, "")
+            gt_label = cluster
 
-        cells.append(CellData(cell_id=barcode, x=x, y=y, cluster=cluster, metadata=metadata))
+        if not cluster or cluster.upper() == "NA":
+            continue
+
+        metadata: dict = {"ground_truth": gt_label} if pred_mode else {}
+        cells.append(CellData(
+            cell_id=barcode, x=x, y=y, cluster=cluster, metadata=metadata,
+        ))
         clusters[cluster].append(len(cells) - 1)
 
     if not cells:
@@ -195,11 +315,38 @@ CLUSTER_COLORS = {
     "WM":     "#5D6D7E",
     "ERR_POSITION": "#FF1A1A", "ERR_LABEL": "#FF5A1A",
 }
+# Prediction / domain color palette (warm family). Keyed by domain id string.
+DOMAIN_COLORS = {
+    "0": "#7F8C8D", "1": "#E67E22", "2": "#E74C3C", "3": "#F39C12",
+    "4": "#D35400", "5": "#C0392B", "6": "#F1C40F", "7": "#A93226",
+    "8": "#E59866", "9": "#CB4335", "10": "#F5B041",
+    "WM": "#7F8C8D",
+}
 _FALLBACK = ["#008B8B","#008080","#0E6655","#1E90FF","#7B68EE","#6A5ACD",
              "#483D8B","#4B0082","#8E44AD","#1ABC9C","#117A65","#191970"]
 
 def get_cluster_color(name: str) -> tuple:
     h = CLUSTER_COLORS.get(name)
+    if not h:
+        h = _FALLBACK[sum(ord(c) for c in name) % len(_FALLBACK)]
+    h = h.lstrip("#")
+    return tuple(int(h[i:i+2], 16)/255.0 for i in (0,2,4))
+
+
+def _domain_id_from_label(name: str) -> str:
+    """Extract the numeric domain id from a label like 'Domain3' -> '3'."""
+    if not name:
+        return ""
+    if name.startswith("Domain"):
+        return name[len("Domain"):]
+    return name
+
+
+def get_domain_color(name: str) -> tuple:
+    """Color for a prediction-domain label. Falls back to a stable hash color."""
+    h = DOMAIN_COLORS.get(name)
+    if not h:
+        h = DOMAIN_COLORS.get(_domain_id_from_label(name))
     if not h:
         h = _FALLBACK[sum(ord(c) for c in name) % len(_FALLBACK)]
     h = h.lstrip("#")
@@ -313,10 +460,8 @@ class SpatialViewerWidget(QWidget):
 
     def load_section(self, dataset: SpatialDataset, results_dataset: Optional[SpatialDataset] = None):
         self._dataset = dataset
-        # Auto-try loading results if not provided
-        if results_dataset is None:
-            results_root = Path(__file__).resolve().parent.parent / "results"
-            results_dataset = load_spatial_dataset(str(results_root), dataset.section_id)
+        # Use the caller-supplied results dataset only. If it's None we just
+        # fall back to rendering the GT on both faces.
         self._results_dataset = results_dataset
         self._hovered_cluster = None
         self._clear_boundaries()
@@ -330,10 +475,16 @@ class SpatialViewerWidget(QWidget):
         if ds is None:
             return
 
-        # Remove old point actors (including highlight)
+        # Remove old point / highlight / error / boundary actors
         for name in list(p.actors.keys()):
-            if name.startswith("cell_points"):
-                p.remove_actor(name)
+            if (
+                name.startswith("cell_points")
+                or name.startswith("boundary_")
+            ):
+                try:
+                    p.remove_actor(name)
+                except Exception:
+                    pass
 
         gap = self._gap
         z_gt = -gap / 2 - 0.01   # back side: groundtruth
@@ -363,9 +514,9 @@ class SpatialViewerWidget(QWidget):
         pts_res = np.zeros((n_res, 3), dtype=np.float32)
         colors_res = np.zeros((n_res, 3), dtype=np.float32)
         # Override cluster labels for error points
-        res_clusters = {}  # cluster_name -> list of indices (for hover linkage)
-        error_extra_indices = set()
-        error_label_indices = set()
+        res_clusters: dict[str, list[int]] = {}  # cluster_name -> cell indices
+        error_extra_indices: set[int] = set()
+        error_label_indices: set[int] = set()
 
         if self._results_dataset is not None and self._results_dataset is not ds:
             gt_pos_set = {(c.x, c.y) for c in ds.cells}
@@ -383,7 +534,7 @@ class SpatialViewerWidget(QWidget):
                     error_label_indices.add(i)
                     res_clusters.setdefault("ERR_LABEL", []).append(i)
                 else:
-                    colors_res[i] = get_cluster_color(cell.cluster)
+                    colors_res[i] = get_domain_color(cell.cluster)
                     res_clusters.setdefault(cell.cluster, []).append(i)
         else:
             for i, cell in enumerate(res_ds.cells):
@@ -566,11 +717,13 @@ class SpatialViewerWidget(QWidget):
             if 0 <= pid < len(target_ds.cells):
                 if picked_layer == "res" and self._results_dataset is not None:
                     r_clusters = getattr(self, "_res_clusters", target_ds.clusters)
-                    cluster = target_ds.cells[pid].cluster
+                    cluster = None
                     for cname, indices in r_clusters.items():
                         if pid in indices:
                             cluster = cname
                             break
+                    if cluster is None:
+                        cluster = target_ds.cells[pid].cluster
                 else:
                     cluster = target_ds.cells[pid].cluster
 
@@ -650,7 +803,7 @@ class SpatialViewerWidget(QWidget):
             if r_indices:
                 z_res = self._gap / 2 + 0.015
                 res_hl_pts = np.array([[res_ds.cells[i].x, res_ds.cells[i].y, z_res] for i in r_indices], dtype=np.float32)
-                res_hl_colors = np.array([get_cluster_color(res_ds.cells[i].cluster) for i in r_indices], dtype=np.float32)
+                res_hl_colors = np.array([get_domain_color(res_ds.cells[i].cluster) for i in r_indices], dtype=np.float32)
                 res_hl_pdata = pv.PolyData(res_hl_pts)
                 res_hl_pdata["colors"] = res_hl_colors
                 p.add_mesh(

@@ -331,15 +331,18 @@ class NotebookWorkspace(QWidget):
                 self._collection = self._flexible_scan(gt_dir, res_dir, section_ids)
             n = len(self._collection.pairs) if self._collection else 0
             logger.info('Final image count: %d', n)
-            # Push to clustering view
-            if self._collection and self._collection.pairs:
-                data_root_str = str(gt_dir) if str(gt_dir) != str(data_root) else str(data_root)
-                self._clustering_page.load_data(self._collection, data_root_str, section_ids)
-            else:
-                self._clustering_page.show_no_data()
-                self.show_status_message('No images found in dataset. Check folder structure.')
-                return
-            # Load overlay for 3D / cell-level display
+            # Always push GT and Results roots into the clustering page so the
+            # 3D view can render the predictions too, even if the side-by-side
+            # PNG scan came up empty.
+            if self._collection is None:
+                self._collection = self._flexible_scan(gt_dir, res_dir, section_ids)
+            self._clustering_page.load_data(
+                self._collection,
+                gt_root=str(gt_dir),
+                results_root=str(res_dir),
+                section_ids=section_ids,
+            )
+            # Load overlay for 3D / cell-level display (CSV-driven).
             try:
                 has_pred = _check_results_has_csv(res_dir)
                 gt_col = 'layer_guess_reordered'
@@ -354,7 +357,8 @@ class NotebookWorkspace(QWidget):
                 logger.debug('Overlay loading skipped (no CSV metadata)')
             self._ari_map = self._load_ari_map()
             self.show_status_message(
-                'Ready - %d images, %d sections' % (n, len(self._overlay_datasets))
+                'Ready - %d image pairs, %d sections with overlay data'
+                % (n, len(self._overlay_datasets))
             )
         except Exception as exc:
             logger.warning('Data load error: %s', exc)
@@ -434,4 +438,20 @@ class NotebookWorkspace(QWidget):
         self._dark = not self._dark
         self._sidebar.set_dark(self._dark)
         apply_theme(self._dark)
+        # Propagate theme to the active views.
+        if self._clustering_page is not None:
+            try:
+                self._clustering_page.set_dark(self._dark)
+            except Exception:
+                pass
+        for view in (
+            self._statistics_view,
+            self._plots_view,
+            self._heatmap_view,
+        ):
+            if view is not None and hasattr(view, "set_dark"):
+                try:
+                    view.set_dark(self._dark)
+                except Exception:
+                    pass
         self.theme_toggled.emit(self._dark)

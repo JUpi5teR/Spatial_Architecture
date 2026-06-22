@@ -154,7 +154,8 @@ class ClusteringPage(QWidget):
         self._mode = "sbs"
         self._collection = None
         self._current_index = 0
-        self._data_root = ""
+        self._gt_root = ""
+        self._results_root = ""
         self._section_ids = []
         self._build_ui()
 
@@ -170,6 +171,33 @@ class ClusteringPage(QWidget):
         title = QLabel("Clustering")
         title.setStyleSheet("font-size: 22px; font-weight: 800; color: #1a1a1a;")
         bar.addWidget(title)
+
+        # Section navigator
+        nav = QHBoxLayout()
+        nav.setSpacing(6)
+        self._btn_prev = QPushButton("‹ Prev")
+        self._btn_prev.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_prev.setStyleSheet(_BTN_STYLE)
+        self._btn_prev.clicked.connect(self._on_prev_section)
+        nav.addWidget(self._btn_prev)
+
+        self._section_label = QLabel("-- / --")
+        self._section_label.setStyleSheet(
+            "font-size: 12px; color: #555; padding: 0 8px; min-width: 130px;"
+        )
+        self._section_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        nav.addWidget(self._section_label)
+
+        self._btn_next = QPushButton("Next ›")
+        self._btn_next.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_next.setStyleSheet(_BTN_STYLE)
+        self._btn_next.clicked.connect(self._on_next_section)
+        nav.addWidget(self._btn_next)
+
+        nav_w = QWidget()
+        nav_w.setLayout(nav)
+        bar.addWidget(nav_w)
+
         bar.addStretch()
 
         self._btn_sbs = QPushButton("Side-by-Side")
@@ -218,10 +246,9 @@ class ClusteringPage(QWidget):
             self._hover_panel.section_changed.connect(self._on_hover_section)
             self._hover_panel.mode_changed.connect(self._spatial_viewer.set_mode)
             self._hover_panel.view_requested.connect(self._on_hover_view)
-            if hasattr(self._spatial_viewer, 'cluster_hovered'):
-                self._spatial_viewer.cluster_hovered.connect(
-                    self._hover_panel.set_cluster_info
-                )
+            self._spatial_viewer.cluster_hovered.connect(
+                self._hover_panel.set_cluster_info
+            )
             sp_ly.addWidget(self._hover_panel)
 
             self._content_stack.addWidget(spatial_container)
@@ -250,7 +277,7 @@ class ClusteringPage(QWidget):
             self._content_stack.setCurrentIndex(0)
         else:
             self._content_stack.setCurrentIndex(1)
-            if self._spatial_viewer and self._data_root and self._section_ids:
+            if self._spatial_viewer and self._gt_root and self._section_ids:
                 idx = min(self._current_index, len(self._section_ids) - 1)
                 if idx >= 0:
                     self._load_spatial(self._section_ids[idx])
@@ -259,7 +286,11 @@ class ClusteringPage(QWidget):
     # Hover panel callbacks
     # ----------------------------------------------------------------
     def _on_hover_section(self, sid):
-        if HAS_SPATIAL and self._data_root:
+        if HAS_SPATIAL and self._gt_root:
+            if sid in self._section_ids:
+                self._current_index = self._section_ids.index(sid)
+                self._update_section_label()
+                self._show_pair_at(self._current_index)
             self._load_spatial(sid)
 
     def _on_hover_view(self, view):
@@ -270,46 +301,144 @@ class ClusteringPage(QWidget):
                 self._spatial_viewer.view_back()
 
     # ----------------------------------------------------------------
+    # Section navigator
+    # ----------------------------------------------------------------
+    def _on_prev_section(self):
+        if not self._section_ids:
+            return
+        self._current_index = (self._current_index - 1) % len(self._section_ids)
+        self._show_current_section()
+
+    def _on_next_section(self):
+        if not self._section_ids:
+            return
+        self._current_index = (self._current_index + 1) % len(self._section_ids)
+        self._show_current_section()
+
+    def _show_current_section(self):
+        idx = self._current_index
+        if idx < 0 or idx >= len(self._section_ids):
+            return
+        sid = self._section_ids[idx]
+        self._update_section_label()
+        # Update side-by-side image pair
+        self._show_pair_at(idx)
+        # Update spatial 3D
+        if HAS_SPATIAL and self._gt_root:
+            self._load_spatial(sid)
+        # Keep hover panel combo in sync
+        if self._hover_panel is not None:
+            cb = self._hover_panel._section_combo
+            if cb.currentIndex() != idx:
+                cb.blockSignals(True)
+                cb.setCurrentIndex(idx)
+                cb.blockSignals(False)
+
+    def _show_pair_at(self, idx):
+        if self._collection is None or not self._collection.pairs:
+            return
+        if idx < 0 or idx >= len(self._collection.pairs):
+            return
+        p = self._collection.pairs[idx]
+        if p.pred_missing:
+            self._comparison_view.show_fallback(p)
+        else:
+            self._comparison_view.show_pair(p)
+
+    def _update_section_label(self):
+        total = len(self._section_ids)
+        if total == 0:
+            self._section_label.setText("-- / --")
+            return
+        idx = min(self._current_index, total - 1)
+        sid = self._section_ids[idx] if 0 <= idx < total else "-"
+        self._section_label.setText(f"{sid}   ({idx + 1} / {total})")
+
+    # ----------------------------------------------------------------
     # Data loading
     # ----------------------------------------------------------------
-    def load_data(self, collection, data_root="", section_ids=None):
+    def load_data(self, collection, gt_root="", results_root="", section_ids=None):
         self._collection = collection
-        self._data_root = data_root
-        self._section_ids = section_ids or []
+        self._gt_root = gt_root
+        self._results_root = results_root
+        self._section_ids = list(section_ids) if section_ids else []
 
         if collection and collection.pairs:
-            ids = [p.section_id for p in collection.pairs]
-            self._section_ids = ids
-            self._current_index = 0
+            self._section_ids = [p.section_id for p in collection.pairs]
+            self._current_index = min(self._current_index, len(self._section_ids) - 1)
+            if self._current_index < 0:
+                self._current_index = 0
 
-            # Show first image in side-by-side
-            p = collection.pairs[0]
-            if p.pred_missing:
-                self._comparison_view.show_fallback(p)
-            else:
-                self._comparison_view.show_pair(p)
+            self._show_pair_at(self._current_index)
+            self._update_section_label()
 
             # Populate hover panel section combo
             if self._hover_panel:
                 self._hover_panel.set_sections(self._section_ids)
+        else:
+            self._update_section_label()
 
-            # Load first section in spatial
-            if self._mode == "spatial" and self._spatial_viewer:
-                self._load_spatial(ids[0])
+        # Always try to load the current section into the 3D view, so the
+        # Spatial 3D tab shows real data even if Side-by-Side is empty.
+        if (
+            HAS_SPATIAL
+            and self._spatial_viewer is not None
+            and self._gt_root
+            and self._section_ids
+        ):
+            sid = self._section_ids[min(self._current_index,
+                                        len(self._section_ids) - 1)]
+            self._load_spatial(sid)
 
     def _load_spatial(self, sid):
-        if not HAS_SPATIAL or not self._spatial_viewer:
+        if not HAS_SPATIAL or not self._spatial_viewer or not self._gt_root:
             return
         try:
-            ds = load_spatial_dataset(str(self._data_root), sid)
-            if ds:
-                self._spatial_viewer.load_section(ds)
-        except Exception:
-            pass
+            gt_ds = load_spatial_dataset(str(self._gt_root), sid)
+            res_ds = None
+            if self._results_root:
+                res_ds = load_spatial_dataset(
+                    str(self._results_root), sid,
+                    results_dir=str(self._results_root),
+                    pred_mode=True,
+                )
+            if gt_ds is not None:
+                self._spatial_viewer.load_section(gt_ds, res_ds)
+        except Exception as exc:
+            from utils.logger import logger
+            logger.warning("Failed to load spatial section %s: %s", sid, exc)
 
     def show_no_data(self):
+        self._collection = None
+        self._section_ids = []
+        self._update_section_label()
         self._comparison_view.show_no_data()
+
+    def set_dark(self, dark: bool):
+        """Forward theme change to comparison view + 3D viewer."""
+        if self._comparison_view is not None and hasattr(
+            self._comparison_view, "update_theme"
+        ):
+            try:
+                self._comparison_view.update_theme(dark)
+            except Exception:
+                pass
+        if self._spatial_viewer is not None and hasattr(
+            self._spatial_viewer, "set_dark"
+        ):
+            try:
+                self._spatial_viewer.set_dark(dark)
+            except Exception:
+                pass
 
     @property
     def comparison_view(self):
         return self._comparison_view
+
+    @property
+    def gt_root(self) -> str:
+        return self._gt_root
+
+    @property
+    def results_root(self) -> str:
+        return self._results_root

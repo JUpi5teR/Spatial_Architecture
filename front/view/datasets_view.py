@@ -65,10 +65,9 @@ class DatasetsViewWidget(QWidget):
     def _build_ui(self):
         ly = QVBoxLayout(self)
         ly.setContentsMargins(0, 0, 0, 0)
-        ly.addWidget(QLabel("Datasets"))
-        title = self.findChild(QLabel)
-        if title:
-            title.setStyleSheet(_TITLE)
+        self._title_label = QLabel("Datasets")
+        self._title_label.setStyleSheet(_TITLE)
+        ly.addWidget(self._title_label)
         sub = QLabel("Notebook: " + self._notebook.name)
         sub.setStyleSheet("font-size: 12px; color: #888; padding: 0 30px 16px 30px;")
         ly.addWidget(sub)
