@@ -1,11 +1,12 @@
-"""Side-by-side image comparison view with zoom, pan, and sync."""
+﻿"""Side-by-side image comparison view with zoom, pan, and sync."""
 from __future__ import annotations
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 from PySide6.QtCore import Qt, QPoint, QPointF, Signal
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QBrush
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -71,7 +72,7 @@ class ZoomableImageLabel(QLabel):
         self._pan_start: Optional[QPoint] = None
         self._pan_offset: QPoint = QPoint(0, 0)
         self._drag_active: bool = False
-        self._dark: bool = True
+        self._dark: bool = False
         # Scatter overlay data (in image pixel coordinates)
         self._scatter_x: Optional[np.ndarray] = None
         self._scatter_y: Optional[np.ndarray] = None
@@ -244,7 +245,7 @@ class ImagePanel(QWidget):
 
     def __init__(self, title: str, parent: QWidget | None = None):
         super().__init__(parent)
-        self._dark: bool = True
+        self._dark: bool = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -352,15 +353,18 @@ def _get_color(name):
 class ComparisonViewWidget(QWidget):
     """Side-by-side GT vs Prediction image comparison with scatter overlay."""
 
+    section_changed = Signal(str)
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self._dark: bool = True
+        self._dark: bool = False
         self._syncing: bool = False
         self._sync_locked: bool = False
 
         # Data roots for loading spatial data
         self._data_root: str = ""
         self._res_root: str = ""
+        self._section_ids: list = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -376,6 +380,19 @@ class ComparisonViewWidget(QWidget):
         self._sync_btn.setStyleSheet(_BTN_DARK)
         self._sync_btn.clicked.connect(self._on_sync_toggled)
         ctrl_layout.addWidget(self._sync_btn)
+
+        # Section selector
+        section_label = QLabel("Section:")
+        section_label.setStyleSheet(_LABEL_DARK)
+        ctrl_layout.addWidget(section_label)
+        self._section_combo = QComboBox()
+        self._section_combo.setFixedWidth(140)
+        self._section_combo.setStyleSheet(
+            "QComboBox { background: #fff; color: #333; border: 1px solid #e0e0e0; border-radius: 6px; padding: 4px 10px; font-size: 12px; }"
+            " QComboBox:hover { border-color: #b9d2f1; }"
+        )
+        self._section_combo.currentTextChanged.connect(self._on_section_changed)
+        ctrl_layout.addWidget(self._section_combo)
         ctrl_layout.addStretch()
 
         layout.addLayout(ctrl_layout)
@@ -478,6 +495,31 @@ class ComparisonViewWidget(QWidget):
             self._syncing = False
 
     # ---- Data roots ----
+
+    def set_sections(self, section_ids):
+        """Populate the section selector combo box."""
+        self._section_ids = list(section_ids)
+        if self._section_combo is None:
+            return
+        self._section_combo.blockSignals(True)
+        self._section_combo.clear()
+        self._section_combo.addItems(section_ids)
+        self._section_combo.blockSignals(False)
+
+    def set_current_section(self, section_id):
+        """Select a section in the combo without emitting signal."""
+        if self._section_combo is None:
+            return
+        self._section_combo.blockSignals(True)
+        idx = self._section_combo.findText(section_id)
+        if idx >= 0:
+            self._section_combo.setCurrentIndex(idx)
+        self._section_combo.blockSignals(False)
+
+    def _on_section_changed(self, text):
+        """Emit when user selects a different section."""
+        if text and self._section_ids:
+            self.section_changed.emit(text)
 
     def set_data_roots(self, data_root: str, res_root: str) -> None:
         """Set paths for loading GT and Results spatial data."""

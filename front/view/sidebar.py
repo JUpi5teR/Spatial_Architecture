@@ -68,7 +68,6 @@ _DATA = [
 
     ModuleEntry("datasets", "Datasets", "\u25A4"),
 
-    ModuleEntry("preprocessing", "Preprocessing", "\u2699"),
 
 ]
 
@@ -80,9 +79,7 @@ _ANALYSIS = [
 
     ModuleEntry("clustering", "Clustering", "\u25C8", active=True),
 
-    ModuleEntry("marker_genes", "Marker Genes", "\u2697"),
 
-    ModuleEntry("dimensionality", "Dimensionality", "\u223F"),
 
     ModuleEntry("statistics", "Statistics", "\u2261"),
 
@@ -98,9 +95,7 @@ _VISUALIZATION = [
 
     ModuleEntry("heatmaps", "Heatmaps", "\u25A6"),
 
-    ModuleEntry("trajectory", "Trajectory", "\u2933"),
 
-    ModuleEntry("comparison", "Comparison", "\u2295"),
 
 ]
 

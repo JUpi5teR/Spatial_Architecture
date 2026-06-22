@@ -1,4 +1,4 @@
-# coding: utf-8
+﻿# coding: utf-8
 """Notebook workspace - scoped container for all analysis modules."""
 from __future__ import annotations
 
@@ -20,12 +20,12 @@ from utils.logger import logger
 
 from view.sidebar import Sidebar
 from view.upload_view import UploadViewWidget
-from view.comparison_view import ComparisonViewWidget
 from view.clustering_page import ClusteringPage
 from view.statistics_view import StatisticsViewWidget
 from view.plots_view import PlotsViewWidget
 from view.heatmap_view import HeatmapViewWidget
 from view.datasets_view import DatasetsViewWidget
+from view.loading_overlay import LoadingOverlay
 
 SECTION_IDS = [
     "151507", "151508", "151509", "151510",
@@ -50,18 +50,73 @@ def _check_results_has_csv(res_root):
     return False
 
 
-_BACK_BTN = '''
-QPushButton {
-    background: transparent; color: #1a6bc0; border: 1px solid #1a6bc0;
-    border-radius: 6px; font-size: 12px; padding: 6px 14px; font-weight: 600;
-}
-QPushButton:hover { background: #e3eefb; }
-'''
+# ---- Theme helpers ----
+def _back_btn_css(dark):
+    if dark:
+        return (
+            "QPushButton { background: transparent; color: #7ab7ef; border: 1px solid #3a5a7a;"
+            " border-radius: 6px; font-size: 12px; padding: 6px 14px; font-weight: 600; }"
+            "QPushButton:hover { background: rgba(122,183,239,0.12); }"
+        )
+    return (
+        "QPushButton { background: transparent; color: #1a6bc0; border: 1px solid #1a6bc0;"
+        " border-radius: 6px; font-size: 12px; padding: 6px 14px; font-weight: 600; }"
+        "QPushButton:hover { background: #e3eefb; }"
+    )
 
-_TOPBAR = 'background: #fafafa; border-bottom: 1px solid #ececec;'
-_NOTEBOOK_NAME = 'font-size: 16px; font-weight: 700; color: #1a1a1a;'
-_DATASET_LABEL = 'font-size: 12px; color: #888;'
-_EMPTY_STATE = 'font-size: 15px; color: #aaa; padding: 40px;'
+def _topbar_css(dark):
+    if dark:
+        return "background: #1e1e21; border-bottom: 1px solid #2a2a2e;"
+    return "background: #fafafa; border-bottom: 1px solid #ececec;"
+
+def _notebook_name_css(dark):
+    if dark:
+        return "font-size: 16px; font-weight: 700; color: #e8e8ec;"
+    return "font-size: 16px; font-weight: 700; color: #1a1a1a;"
+
+def _dataset_label_css(dark):
+    if dark:
+        return "font-size: 12px; color: #8a8a90;"
+    return "font-size: 12px; color: #888;"
+
+def _empty_state_css(dark):
+    if dark:
+        return "font-size: 15px; color: #555; padding: 40px;"
+    return "font-size: 15px; color: #aaa; padding: 40px;"
+
+def _combo_css(dark):
+    if dark:
+        return (
+            "QComboBox { background: #2a2a2e; color: #e8e8ec;"
+            " border: 1px solid #3a3a3e; border-radius: 6px;"
+            " padding: 4px 10px; font-size: 12px; min-height: 22px; }"
+            "QComboBox:hover { border-color: #5a6a7a; }"
+            "QComboBox::drop-down { border: none; }"
+            "QComboBox QAbstractItemView { background: #2a2a2e; color: #e8e8ec;"
+            " selection-background-color: #3a3a50; border: 1px solid #3a3a3e; }"
+        )
+    return (
+        "QComboBox { background: #ffffff; color: #1a1a1a;"
+        " border: 1px solid #e0e0e0; border-radius: 6px;"
+        " padding: 4px 10px; font-size: 12px; min-height: 22px; }"
+        "QComboBox:hover { border-color: #b9d2f1; }"
+    )
+
+def _statusbar_css(dark):
+    if dark:
+        return (
+            "QStatusBar { background: #1a1a1e; border-top: 1px solid #2a2a2e;"
+            " font-size: 11px; color: #8a8a90; }"
+        )
+    return (
+        "QStatusBar { background: #fafafa; border-top: 1px solid #ececec;"
+        " font-size: 11px; color: #888; }"
+    )
+
+def _stack_css(dark):
+    if dark:
+        return "background: #1e1e21;"
+    return "background: #ffffff;"
 
 class NotebookWorkspace(QWidget):
     back_to_homepage = Signal()
@@ -80,6 +135,20 @@ class NotebookWorkspace(QWidget):
         self._build_ui()
         self._refresh_datasets()
         self._datasets_view.refresh()
+        self._apply_initial_theme()
+    def _apply_initial_theme(self):
+        """Apply the stored dark state to all views at startup."""
+        from view.main_window import apply_theme
+        apply_theme(self._dark)
+        self._sidebar.set_dark(self._dark)
+        self._clustering_page.set_dark(self._dark)
+        self._statistics_view.set_dark(self._dark)
+        self._plots_view.set_dark(self._dark)
+        self._heatmap_view.set_dark(self._dark)
+        self._datasets_view.set_dark(self._dark)
+        self._upload_view.set_dark(self._dark)
+        self._update_topbar_theme()
+
     @property
     def notebook(self):
         return self._notebook
@@ -94,36 +163,29 @@ class NotebookWorkspace(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         # ---- Top bar ----
-        top = QFrame()
-        top.setStyleSheet(_TOPBAR)
-        top.setFixedHeight(52)
-        top_ly = QHBoxLayout(top)
+        self._topbar = QFrame()
+        self._topbar.setStyleSheet(_topbar_css(self._dark))
+        self._topbar.setFixedHeight(52)
+        top_ly = QHBoxLayout(self._topbar)
         top_ly.setContentsMargins(12, 8, 16, 8)
         back_btn = QPushButton('\u2190  Homepage')
-        back_btn.setStyleSheet(_BACK_BTN)
+        back_btn.setStyleSheet(_back_btn_css(self._dark))
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         back_btn.clicked.connect(self.back_to_homepage.emit)
         top_ly.addWidget(back_btn)
         self._title_label = QLabel(self._notebook.name)
-        self._title_label.setStyleSheet(_NOTEBOOK_NAME)
+        self._title_label.setStyleSheet(_notebook_name_css(self._dark))
         top_ly.addWidget(self._title_label)
         top_ly.addStretch()
         ds_label = QLabel('Dataset:')
-        ds_label.setStyleSheet(_DATASET_LABEL)
+        ds_label.setStyleSheet(_dataset_label_css(self._dark))
         top_ly.addWidget(ds_label)
         self._dataset_combo = QComboBox()
         self._dataset_combo.setMinimumWidth(220)
-        self._dataset_combo.setStyleSheet(
-            'QComboBox {'
-                'background: #ffffff; color: #1a1a1a;'
-                'border: 1px solid #e0e0e0; border-radius: 6px;'
-                'padding: 4px 10px; font-size: 12px; min-height: 22px;'
-            '}'
-            'QComboBox:hover { border-color: #b9d2f1; }'
-        )
+        self._dataset_combo.setStyleSheet(_combo_css(self._dark))
         self._dataset_combo.currentIndexChanged.connect(self._on_dataset_changed)
         top_ly.addWidget(self._dataset_combo)
-        root.addWidget(top)
+        root.addWidget(self._topbar)
         # ---- Body ----
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -136,23 +198,24 @@ class NotebookWorkspace(QWidget):
         self._sidebar.module_selected.connect(self._on_module_selected)
         body.addWidget(self._sidebar)
         self._stack = QStackedWidget()
-        self._stack.setStyleSheet('background: #ffffff;')
+        self._stack.setStyleSheet(_stack_css(self._dark))
         self._upload_view = UploadViewWidget(self._path_mgr)
         self._upload_view.folder_registered.connect(self._on_folder_registered)
         self._clustering_page = ClusteringPage()
-        self._comparison_view = self._clustering_page.comparison_view
         self._statistics_view = StatisticsViewWidget(self._path_mgr)
         self._plots_view = PlotsViewWidget(self._path_mgr)
         self._heatmap_view = HeatmapViewWidget(self._path_mgr)
         # REAL datasets page (replaces placeholder)
         self._datasets_view = DatasetsViewWidget(self._ds_mgr, self._notebook)
         self._datasets_view.dataset_activated.connect(self._on_dataset_loaded)
+        self._datasets_view.dataset_renamed.connect(self._on_dataset_renamed)
+        self._datasets_view.dataset_deleted.connect(self._on_dataset_deleted)
+        self._empty_label = None
+        self._placeholder_label = None
         self._empty_widget = self._make_empty('No dataset loaded.\nPlease upload data first.')
         self._page_placeholder = self._make_placeholder('Coming soon')
         # Stack: 0=upload  1=clustering  2=statistics  3=plots
         #        4=heatmaps  5=empty  6=overview  7=datasets
-        #        8=preprocessing  9=marker_genes  10=dimensionality
-        #        11=trajectory  12=comparison
         self._stack.addWidget(self._upload_view)         # 0
         self._stack.addWidget(self._clustering_page)       # 1
         self._stack.addWidget(self._statistics_view)     # 2
@@ -161,45 +224,49 @@ class NotebookWorkspace(QWidget):
         self._stack.addWidget(self._empty_widget)        # 5
         self._stack.addWidget(self._page_placeholder)    # 6
         self._stack.addWidget(self._datasets_view)       # 7  DATASETS
-        self._stack.addWidget(self._page_placeholder)    # 8
-        self._stack.addWidget(self._page_placeholder)    # 9
-        self._stack.addWidget(self._page_placeholder)    # 10
-        self._stack.addWidget(self._page_placeholder)    # 11
-        self._stack.addWidget(self._page_placeholder)    # 12
         self._module_map = {
             'upload': 0, 'clustering': 1, 'statistics': 2,
             'plots': 3, 'heatmaps': 4,
-            'overview': 7, 'datasets': 7, 'preprocessing': 8,
-            'marker_genes': 9, 'dimensionality': 10,
-            'trajectory': 11, 'comparison': 12,
+            'overview': 7, 'datasets': 7,
         }
         body.addWidget(self._stack)
         root.addLayout(body)
         self._status = QStatusBar()
-        self._status.setStyleSheet(
-            'QStatusBar { background: #fafafa; border-top: 1px solid #ececec;'
-            ' font-size: 11px; color: #888; }'
-        )
+        self._status.setStyleSheet(_statusbar_css(self._dark))
         self._status.setFixedHeight(26)
         root.addWidget(self._status)
         self._stack.setCurrentIndex(0)
+
+        # Loading overlay
+        self._loading_overlay = LoadingOverlay(self)
+
+    def show_loading(self):
+        """Show loading overlay, blocking interaction."""
+        self._loading_overlay.show()
+
+    def hide_loading(self):
+        """Hide loading overlay."""
+        self._loading_overlay.hide()
+
     def _make_empty(self, text):
         w = QWidget()
         ly = QVBoxLayout(w)
         ly.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl = QLabel(text)
-        lbl.setStyleSheet(_EMPTY_STATE)
+        lbl.setStyleSheet(_empty_state_css(self._dark))
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ly.addWidget(lbl)
+        self._empty_label = lbl
         return w
     def _make_placeholder(self, text):
         w = QWidget()
         ly = QVBoxLayout(w)
         ly.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl = QLabel(text)
-        lbl.setStyleSheet('font-size: 18px; color: #bbb; padding: 40px;')
+        lbl.setStyleSheet(_empty_state_css(self._dark))
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ly.addWidget(lbl)
+        self._placeholder_label = lbl
         return w
     # ----------------------------------------------------------------
     # Sidebar navigation
@@ -214,13 +281,12 @@ class NotebookWorkspace(QWidget):
             if key == 'datasets':
                 logger.info('_on_module_selected: datasets clicked, refreshing')
                 self._datasets_view.refresh()
-                logger.info('_on_module_selected: table rows=%s', self._datasets_view._table.rowCount())
+                logger.info('_on_module_selected: datasets page refreshed')
             self._stack.setCurrentIndex(idx)
             return
         # Analysis modules need data
         if key in ('clustering', 'statistics', 'plots', 'heatmaps',
-                    'preprocessing', 'comparison',
-                    'overview', 'marker_genes', 'dimensionality', 'trajectory'):
+                    'overview'):
             if self._current_dataset is None:
                 self.show_status_message('No dataset loaded. Please upload data first.')
                 self._stack.setCurrentWidget(self._empty_widget)
@@ -276,22 +342,41 @@ class NotebookWorkspace(QWidget):
                 break
 
     def _select_dataset(self, dataset_id):
+        self.show_loading()
         try:
             ds = self._ds_mgr.get_by_id(dataset_id)
             if ds is None:
                 return
             self._current_dataset = ds
+            self._datasets_view.set_current_dataset(ds.id)
             self._load_data(ds)
             self.show_status_message('Loaded: ' + ds.name)
         except Exception as e:
             logger.error('_select_dataset failed: %s', e, exc_info=True)
             self.show_status_message('Failed to load dataset: ' + str(e))
+        finally:
+            self.hide_loading()
+    def _on_dataset_renamed(self, dataset_id, new_name):
+        self._ds_mgr.update_name(dataset_id, new_name)
+        self._refresh_datasets()
+        self._datasets_view.refresh()
+        self._nb_mgr.touch(self._notebook.id)
+        self.notebook_updated.emit()
+
+    def _on_dataset_deleted(self, dataset_id):
+        self._ds_mgr.soft_delete(dataset_id)
+        self._refresh_datasets()
+        self._datasets_view.refresh()
+        self._nb_mgr.touch(self._notebook.id)
+        self.notebook_updated.emit()
+
     # ----------------------------------------------------------------
     # Upload handler
     # ----------------------------------------------------------------
     def _on_folder_registered(self, root):
         if root is None:
                 return
+        self.show_loading()
         try:
             structure = self._path_mgr.structure()
             if structure is None:
@@ -318,6 +403,8 @@ class NotebookWorkspace(QWidget):
         except Exception as e:
             logger.error('Upload failed: %s', e, exc_info=True)
             self.show_status_message('Upload error: ' + str(e))
+        finally:
+            self.hide_loading()
 
     def _load_data(self, ds):
         self.show_status_message('Loading data...')
@@ -435,9 +522,50 @@ class NotebookWorkspace(QWidget):
     def update_notebook_name(self, new_name):
         self._notebook.name = new_name
         self._title_label.setText(new_name)
+    def _update_topbar_theme(self):
+        """Refresh topbar/status/stack styles for current dark state."""
+        self._topbar.setStyleSheet(_topbar_css(self._dark))
+        self._dataset_combo.setStyleSheet(_combo_css(self._dark))
+        self._stack.setStyleSheet(_stack_css(self._dark))
+        self._status.setStyleSheet(_statusbar_css(self._dark))
+        if self._empty_label:
+            self._empty_label.setStyleSheet(_empty_state_css(self._dark))
+        if self._placeholder_label:
+            self._placeholder_label.setStyleSheet(_empty_state_css(self._dark))
+        # Update topbar child widget styles
+        for i in range(self._topbar.layout().count()):
+            w = self._topbar.layout().itemAt(i).widget()
+            if isinstance(w, QPushButton) and "←" in w.text():
+                w.setStyleSheet(_back_btn_css(self._dark))
+            elif w is self._title_label:
+                w.setStyleSheet(_notebook_name_css(self._dark))
+            elif isinstance(w, QLabel) and w.text() == "Dataset:":
+                w.setStyleSheet(_dataset_label_css(self._dark))
+
     def _toggle_theme(self):
-        from view.main_window import apply_theme
-        self._dark = not self._dark
-        self._sidebar.set_dark(self._dark)
-        apply_theme(self._dark)
-        self.theme_toggled.emit(self._dark)
+        if getattr(self, '_theme_switching', False):
+            return
+        self._theme_switching = True
+        try:
+            self._dark = not self._dark
+            self.setUpdatesEnabled(False)
+            try:
+                from view.main_window import apply_theme
+                apply_theme(self._dark)
+                self.set_dark(self._dark)
+            finally:
+                self.setUpdatesEnabled(True)
+            self.theme_toggled.emit(self._dark)
+        finally:
+            self._theme_switching = False
+
+    def set_dark(self, dark: bool) -> None:
+        self._dark = dark
+        self._sidebar.set_dark(dark)
+        self._clustering_page.set_dark(dark)
+        self._statistics_view.set_dark(dark)
+        self._plots_view.set_dark(dark)
+        self._heatmap_view.set_dark(dark)
+        self._datasets_view.set_dark(dark)
+        self._upload_view.set_dark(dark)
+        self._update_topbar_theme()

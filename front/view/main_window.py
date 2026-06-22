@@ -1,4 +1,4 @@
-# coding: utf-8
+﻿# coding: utf-8
 
 """ClustroView main window - root navigation shell.
 
@@ -93,6 +93,8 @@ _LIGHT = {
    "HighlightedText": (250, 250, 250),
 
 }
+
+
 
 
 
@@ -328,3 +330,12 @@ class MainWindow(QMainWindow):
     def _on_theme_toggled(self, dark: bool) -> None:
         self._dark = dark
         apply_theme(dark)
+        try:
+            self._homepage.set_dark(dark)
+        except Exception:
+            pass
+        if self._notebook_workspace:
+            try:
+                self._notebook_workspace.set_dark(dark)
+            except Exception:
+                pass
