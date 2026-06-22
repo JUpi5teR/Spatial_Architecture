@@ -336,7 +336,37 @@ class UploadViewWidget(QWidget):
 
     def set_dark(self, dark: bool) -> None:
         self._dark = dark
-
+        bg = '#1e1e21' if dark else '#fafafa'
+        fg = '#d0d0d5' if dark else '#1a1a1a'
+        btn_bg = '#2a2a2e' if dark else '#ffffff'
+        btn_fg = '#d0d0d5' if dark else '#333'
+        btn_border = '#3a3a3e' if dark else '#e0e0e0'
+        btn_hover_bg = '#3a3a50' if dark else '#eef3fb'
+        self.setStyleSheet(f'UploadViewWidget {{ background-color: {bg}; }}')
+        self._path_label.setStyleSheet(f'color: {"#aaa" if dark else "#888"}; font-size: 12px; padding: 8px 20px;')
+        for btn in [self._btn_folder, self._btn_zip, self._btn_clear]:
+            btn.setStyleSheet(
+                f'QPushButton {{ background: {btn_bg}; color: {btn_fg}; border: 1px solid {btn_border}; border-radius: 6px; padding: 8px 18px; font-size: 13px; font-weight: 600; }}'
+                f'QPushButton:hover {{ background: {btn_hover_bg}; }}'
+            )
+        self._btn_confirm.setStyleSheet(
+            f'QPushButton {{ background: {"#1a3a2e" if dark else "#e8f5e9"}; color: {"#81c784" if dark else "#2e7d32"}; border: none; border-radius: 6px; padding: 10px 24px; font-size: 14px; font-weight: 700; }}'
+            f'QPushButton:hover {{ background: {"#1e4e3a" if dark else "#c8e6c9"}; }}'
+        )
+        for lbl in self.findChildren(QLabel):
+            t = lbl.text()
+            if t == 'Folder structure preview':
+                lbl.setStyleSheet(f'font-size: 14px; font-weight: 700; color: {fg};')
+            elif t == 'Expected folder structure':
+                lbl.setStyleSheet(f'font-size: 14px; font-weight: 700; color: {fg};')
+        for te in self.findChildren(QTextEdit):
+            te.setStyleSheet(
+                f'QTextEdit {{ background: {"#1a1a1e" if dark else "#fff"}; color: {fg}; border: 1px solid {"#3a3a3e" if dark else "#e0e0e0"}; border-radius: 6px; padding: 10px; }}'
+            )
+        if hasattr(self, '_guide_text'):
+            self._guide_text.setStyleSheet(
+                f'QTextEdit {{ background: {"#1a1a1e" if dark else "#fafafa"}; color: {"#8a8a90" if dark else "#666"}; border: 1px solid {"#3a3a3e" if dark else "#e8e8e8"}; border-radius: 6px; padding: 10px; }}'
+            )
     def _on_select_folder(self) -> None:
 
         path_str = QFileDialog.getExistingDirectory(self, "Select data folder")

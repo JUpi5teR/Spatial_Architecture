@@ -1,4 +1,4 @@
-# coding: utf-8
+﻿# coding: utf-8
 """Plots 页面 —— 训练过程曲线 (Loss, ARI, NMI, HS, CS)。
 
 读取 train_log 中每个指标的 .csv，按 epoch 绘制折线图。
@@ -45,10 +45,19 @@ class PlotsViewWidget(QWidget):
         self._dark = dark
         bg = "#1e1e21" if dark else "#fafafa"
         fg = "#d0d0d5" if dark else "#1a1a1a"
+        combo_bg = "#2a2a2e" if dark else "#fff"
+        combo_fg = "#e8e8ec" if dark else "#333"
+        combo_border = "#3a3a3e" if dark else "#ddd"
         self.setStyleSheet(f"PlotsViewWidget {{ background-color: {bg}; }}")
         for lbl in self.findChildren(QLabel):
             if lbl.text().startswith("↗"):
                 lbl.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {fg};")
+        if self._metric_combo:
+            self._metric_combo.setStyleSheet(
+                f"QComboBox {{ background: {combo_bg}; color: {combo_fg}; border: 1px solid {combo_border}; border-radius: 4px; padding: 4px 8px; }}"
+                f"QComboBox:hover {{ border-color: #5a6a7a; }}"
+                f"QComboBox QAbstractItemView {{ background: {combo_bg}; color: {combo_fg}; selection-background-color: #3a3a50; }}"
+            )
         if self._figure:
             self._figure.patch.set_facecolor(bg)
             for ax in self._figure.axes:

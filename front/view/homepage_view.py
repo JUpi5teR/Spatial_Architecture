@@ -128,7 +128,7 @@ class CreateNotebookDialog(QDialog):
 
         title = QLabel("Create New Notebook")
         title.setStyleSheet("font-size: 18px; font-weight: 700; color: #1a1a1a;")
-        ly.addWidget(title)
+        ly.addWidget(self._title_label)
 
         name_lbl = QLabel("Notebook Name")
         ly.addWidget(name_lbl)
@@ -489,14 +489,62 @@ class TrashPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._nb_mgr = NotebookManager()
+        self._dark = False
         self.setObjectName("trashPanel")
         self.setFixedWidth(420)
-        self.setStyleSheet("""
-            QFrame#trashPanel {
-                background: #ffffff; border-left: 1px solid #ddd;
-            }
-        """)
+        self._apply_theme()
         self._build_ui()
+
+    def set_dark(self, dark: bool) -> None:
+        self._dark = dark
+        self._apply_theme()
+
+    def _apply_theme(self):
+        dark = self._dark
+        bg = "#2a2a2e" if dark else "#ffffff"
+        border = "#3a3a3e" if dark else "#ddd"
+        fg = "#d0d0d5" if dark else "#333"
+        title_fg = "#f5f5f7" if dark else "#333"
+        close_color = "#8a8a90" if dark else "#aaa"
+        close_hover = "#d0d0d5" if dark else "#333"
+        card_bg = "#1e1e21" if dark else "#fafafa"
+        card_border = "#3a3a3e" if dark else "#eee"
+        card_fg = "#d0d0d5" if dark else "#333"
+        time_fg = "#6a6a70" if dark else "#999"
+        self.setStyleSheet(
+            f"QFrame#trashPanel {{ background: {bg}; border-left: 1px solid {border}; }}"
+        )
+        # Update child widgets
+        for lbl in self.findChildren(QLabel):
+            t = lbl.text()
+            if t.startswith('♻'):
+                lbl.setStyleSheet(f"font-size: 18px; font-weight: 700; color: {title_fg};")
+            elif "Deleted:" in t:
+                lbl.setStyleSheet(f"font-size: 10px; color: {time_fg};")
+            else:
+                lbl.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {card_fg};")
+        for btn in self.findChildren(QPushButton):
+            if btn.text() == '✕':
+                btn.setStyleSheet(
+                    f"QPushButton {{ background: transparent; border: none; font-size: 16px; color: {close_color}; }}"
+                    f"QPushButton:hover {{ color: {close_hover}; }}"
+                )
+            elif btn.text() == 'Restore':
+                btn.setStyleSheet(
+                    f"QPushButton {{ background: {'#1a3a2e' if dark else '#e8f5e9'}; color: {'#81c784' if dark else '#2e7d32'}; border: none; border-radius: 4px; padding: 5px 14px; font-size: 11px; font-weight: 600; }}"
+                    f"QPushButton:hover {{ background: {'#1e4e3a' if dark else '#c8e6c9'}; }}"
+                )
+            elif btn.text() == 'Delete Forever':
+                btn.setStyleSheet(
+                    f"QPushButton {{ background: {'#3a1a1a' if dark else '#ffebee'}; color: {'#ef9a9a' if dark else '#c62828'}; border: none; border-radius: 4px; padding: 5px 14px; font-size: 11px; font-weight: 600; }}"
+                    f"QPushButton:hover {{ background: {'#4e2a2a' if dark else '#ffcdd2'}; }}"
+                )
+        # Update dynamically created cards
+        for card in self.findChildren(QFrame):
+            if card.objectName() == '' and card is not self and not isinstance(card, QScrollArea):
+                card.setStyleSheet(
+                    f"QFrame {{ background: {card_bg}; border: 1px solid {card_border}; border-radius: 8px; padding: 12px; }}"
+                )
 
     def _build_ui(self):
         ly = QVBoxLayout(self)
@@ -547,23 +595,22 @@ class TrashPanel(QFrame):
         notebooks = self._nb_mgr.list_trash()
         for nb in notebooks:
             card = QFrame()
-            card.setStyleSheet("""
-                QFrame {
-                    background: #fafafa; border: 1px solid #eee;
-                    border-radius: 8px; padding: 12px;
-                }
-            """)
+            card_bg = "#1e1e21" if self._dark else "#fafafa"
+            card_border = "#3a3a3e" if self._dark else "#eee"
+            card.setStyleSheet(f"QFrame {{ background: {card_bg}; border: 1px solid {card_border}; border-radius: 8px; padding: 12px; }}")
             card_ly = QVBoxLayout(card)
             card_ly.setSpacing(6)
 
             name_lbl = QLabel(nb.name)
-            name_lbl.setStyleSheet("font-size: 13px; font-weight: 600; color: #333;")
+            card_fg = "#d0d0d5" if self._dark else "#333"
+            name_lbl.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {card_fg};")
             name_lbl.setWordWrap(True)
             card_ly.addWidget(name_lbl)
 
             ts = str(nb.deleted_at)[:16] if nb.deleted_at else "-"
             time_lbl = QLabel("Deleted: " + ts)
-            time_lbl.setStyleSheet("font-size: 10px; color: #999;")
+            time_color = "#6a6a70" if self._dark else "#999"
+            time_lbl.setStyleSheet(f"font-size: 10px; color: {time_color};")
             card_ly.addWidget(time_lbl)
 
             btn_ly = QHBoxLayout()
@@ -571,20 +618,24 @@ class TrashPanel(QFrame):
 
             restore_btn = QPushButton("Restore")
             restore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            rst_bg = "#1a3a2e" if self._dark else "#e8f5e9"
+            rst_fg = "#81c784" if self._dark else "#2e7d32"
+            rst_hover = "#1e4e3a" if self._dark else "#c8e6c9"
             restore_btn.setStyleSheet(
-                "QPushButton { background: #e8f5e9; color: #2e7d32; border: none; "
-                "border-radius: 4px; padding: 5px 14px; font-size: 11px; font-weight: 600; }"
-                "QPushButton:hover { background: #c8e6c9; }"
+                f"QPushButton {{ background: {rst_bg}; color: {rst_fg}; border: none; border-radius: 4px; padding: 5px 14px; font-size: 11px; font-weight: 600; }}"
+                f"QPushButton:hover {{ background: {rst_hover}; }}"
             )
             restore_btn.clicked.connect(lambda _, nid=nb.id: self._restore(nid))
             btn_ly.addWidget(restore_btn)
 
             perm_btn = QPushButton("Delete Forever")
             perm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            prm_bg = "#3a1a1a" if self._dark else "#ffebee"
+            prm_fg = "#ef9a9a" if self._dark else "#c62828"
+            prm_hover = "#4e2a2a" if self._dark else "#ffcdd2"
             perm_btn.setStyleSheet(
-                "QPushButton { background: #ffebee; color: #c62828; border: none; "
-                "border-radius: 4px; padding: 5px 14px; font-size: 11px; font-weight: 600; }"
-                "QPushButton:hover { background: #ffcdd2; }"
+                f"QPushButton {{ background: {prm_bg}; color: {prm_fg}; border: none; border-radius: 4px; padding: 5px 14px; font-size: 11px; font-weight: 600; }}"
+                f"QPushButton:hover {{ background: {prm_hover}; }}"
             )
             perm_btn.clicked.connect(lambda _, nid=nb.id: self._perm_delete(nid))
             btn_ly.addWidget(perm_btn)
@@ -704,6 +755,8 @@ class HomepageView(QWidget):
 
     def _create_notebook(self):
         dlg = CreateNotebookDialog(self)
+        if self._dark:
+            dlg.set_dark(True)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             name = dlg.notebook_name()
             nb_mgr = NotebookManager()
@@ -735,9 +788,9 @@ class HomepageView(QWidget):
             self._home_title_label.setStyleSheet(f"font-size: 28px; font-weight: 800; color: {fg};")
         if hasattr(self, "_home_subtitle_label"):
             self._home_subtitle_label.setStyleSheet(f"font-size: 13px; color: {sub_fg};")
-        # Update search box
-        if hasattr(self, "_search"):
-            self._search.setStyleSheet(
+        # Update search box (on NotebookGrid)
+        if hasattr(self, "_notebook_grid") and hasattr(self._notebook_grid, "_search"):
+            self._notebook_grid._search.setStyleSheet(
                 f"QLineEdit {{ background: {'#2a2a2e' if dark else '#fff'};"
                 f" color: {fg}; border: 1px solid {'#3a3a3e' if dark else '#ddd'};"
                 f" border-radius: 6px; padding: 6px 10px; font-size: 12px; }}"
@@ -749,10 +802,7 @@ class HomepageView(QWidget):
             )
         # Update trash panel
         if hasattr(self, "_trash_panel") and self._trash_panel is not None:
-            self._trash_panel.setStyleSheet(
-                "QFrame#trashPanel { background: #2a2a2e; border-left: 1px solid #3a3a3e; }" if dark
-                else "QFrame#trashPanel { background: #ffffff; border-left: 1px solid #ddd; }"
-            )
+            self._trash_panel.set_dark(dark)
         # Update theme button text
         if hasattr(self, "_theme_btn"):
             self._theme_btn.setText("\u2600  Light" if dark else "\u263E  Dark")
@@ -761,7 +811,6 @@ class HomepageView(QWidget):
         self.refresh()
 
     def _toggle_theme(self):
-        from view.main_window import apply_theme
         if getattr(self, '_theme_switching', False):
             return
         self._theme_switching = True
@@ -769,6 +818,7 @@ class HomepageView(QWidget):
             self._dark = not self._dark
             self.setUpdatesEnabled(False)
             try:
+                from view.main_window import apply_theme
                 apply_theme(self._dark)
                 self.set_dark(self._dark)
             finally:

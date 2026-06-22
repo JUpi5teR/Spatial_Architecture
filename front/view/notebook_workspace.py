@@ -543,26 +543,29 @@ class NotebookWorkspace(QWidget):
                 w.setStyleSheet(_dataset_label_css(self._dark))
 
     def _toggle_theme(self):
-        from view.main_window import apply_theme
         if getattr(self, '_theme_switching', False):
             return
         self._theme_switching = True
         try:
             self._dark = not self._dark
-            # Batch style changes: suppress intermediate repaints
             self.setUpdatesEnabled(False)
             try:
-                self._sidebar.set_dark(self._dark)
-                self._clustering_page.set_dark(self._dark)
-                self._statistics_view.set_dark(self._dark)
-                self._plots_view.set_dark(self._dark)
-                self._heatmap_view.set_dark(self._dark)
-                self._datasets_view.set_dark(self._dark)
-                self._upload_view.set_dark(self._dark)
-                self._update_topbar_theme()
+                from view.main_window import apply_theme
                 apply_theme(self._dark)
+                self.set_dark(self._dark)
             finally:
                 self.setUpdatesEnabled(True)
             self.theme_toggled.emit(self._dark)
         finally:
             self._theme_switching = False
+
+    def set_dark(self, dark: bool) -> None:
+        self._dark = dark
+        self._sidebar.set_dark(dark)
+        self._clustering_page.set_dark(dark)
+        self._statistics_view.set_dark(dark)
+        self._plots_view.set_dark(dark)
+        self._heatmap_view.set_dark(dark)
+        self._datasets_view.set_dark(dark)
+        self._upload_view.set_dark(dark)
+        self._update_topbar_theme()

@@ -148,6 +148,51 @@ class HoverPanel(QFrame):
         ly.addWidget(self._cluster_info)
         ly.addStretch()
 
+    def set_dark(self, dark: bool) -> None:
+        """Update right-side panel for theme."""
+        bg = "#1e1e21" if dark else "#fafafa"
+        border = "#2a2a2e" if dark else "#ececec"
+        fg = "#d0d0d5" if dark else "#555"
+        btn_bg = "#2a2a2e" if dark else "#fff"
+        btn_fg = "#d0d0d5" if dark else "#333"
+        btn_border = "#3a3a3e" if dark else "#ddd"
+        btn_hover_bg = "#3a3a50" if dark else "#eef3fb"
+        btn_hover_border = "#5a6a7a" if dark else "#b9d2f1"
+        sep_color = "#3a3a3e" if dark else "#e0e0e0"
+        title_color = "#64b4ff" if dark else "#1a6bc0"
+        combo_bg = "#2a2a2e" if dark else "#fff"
+        combo_fg = "#e8e8ec" if dark else "#333"
+        combo_border = "#3a3a3e" if dark else "#e0e0e0"
+        text_bg = "#1a1a1e" if dark else "#fff"
+        text_fg = "#d0d0d5" if dark else "#333"
+        text_border = "#3a3a3e" if dark else "#eee"
+        self.setStyleSheet(
+            f"QFrame#hoverPanel {{ background: {bg}; border-left: 1px solid {border}; padding: 10px; }}"
+            f"QLabel {{ font-size: 11px; color: {fg}; }}"
+            f"QPushButton {{ background: {btn_bg}; color: {btn_fg}; border: 1px solid {btn_border}; border-radius: 4px; padding: 6px 10px; font-size: 11px; }}"
+            f"QPushButton:hover {{ background: {btn_hover_bg}; border-color: {btn_hover_border}; }}"
+        )
+        # Section combo
+        if hasattr(self, '_section_combo'):
+            self._section_combo.setStyleSheet(
+                f"QComboBox {{ background: {combo_bg}; color: {combo_fg}; border: 1px solid {combo_border}; border-radius: 6px; padding: 4px 10px; font-size: 12px; min-width: 120px; }}"
+                f"QComboBox:hover {{ border-color: {btn_hover_border}; }}"
+                f"QComboBox QAbstractItemView {{ background: {combo_bg}; color: {combo_fg}; selection-background-color: #3a3a50; }}"
+            )
+        # Cluster info text edit
+        if hasattr(self, '_cluster_info'):
+            self._cluster_info.setStyleSheet(
+                f"QTextEdit {{ background: {text_bg}; color: {text_fg}; border: 1px solid {text_border}; border-radius: 4px; font-size: 10px; }}"
+            )
+        # SPATIAL 3D title
+        for lbl in self.findChildren(QLabel):
+            if lbl.text() == "SPATIAL 3D":
+                lbl.setStyleSheet(f"font-size: 12px; font-weight: 800; color: {title_color}; padding-bottom: 4px;")
+        # Separators
+        for sep in self.findChildren(QFrame):
+            if sep.frameShape() == QFrame.Shape.HLine:
+                sep.setStyleSheet(f"border: none; border-top: 1px solid {sep_color};")
+
     def _on_tolerance_change(self, value, label):
         radius = value / 100.0
         label.setText(f"Tolerance: {radius:.2f}")
@@ -223,11 +268,13 @@ class ClusteringPage(QWidget):
         self.setStyleSheet(f"ClusteringPage {{ background-color: {bg}; }}")
         if self._comparison_view:
             self._comparison_view.update_theme(dark)
-        if self._spatial_viewer and self._spatial_viewer.isVisible():
+        if self._spatial_viewer:
             try:
                 self._spatial_viewer.set_dark(dark)
             except Exception:
                 pass
+        if self._hover_panel:
+            self._hover_panel.set_dark(dark)
 
     def _build_ui(self):
         ly = QVBoxLayout(self)
