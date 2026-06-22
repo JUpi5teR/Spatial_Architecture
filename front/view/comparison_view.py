@@ -405,7 +405,7 @@ class ComparisonViewWidget(QWidget):
         # Wrap each panel in a QFrame for the border
         self._gt_frame = QFrame()
         self._gt_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
-        self._gt_frame.setStyleSheet("QFrame { border: 2px solid #5DADE2; border-radius: 4px; }")
+        self._gt_frame.setStyleSheet("QFrame { border: 2px solid #ddd; border-radius: 4px; }")
         gt_frame_layout = QVBoxLayout(self._gt_frame)
         gt_frame_layout.setContentsMargins(2, 2, 2, 2)
 
@@ -414,7 +414,7 @@ class ComparisonViewWidget(QWidget):
 
         self._pred_frame = QFrame()
         self._pred_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
-        self._pred_frame.setStyleSheet("QFrame { border: 2px solid #E74C3C; border-radius: 4px; }")
+        self._pred_frame.setStyleSheet("QFrame { border: 2px solid #ddd; border-radius: 4px; }")
         pred_frame_layout = QVBoxLayout(self._pred_frame)
         pred_frame_layout.setContentsMargins(2, 2, 2, 2)
 
@@ -446,6 +446,9 @@ class ComparisonViewWidget(QWidget):
         self._no_data_label.setStyleSheet(
             _NO_DATA_DARK if dark else _NO_DATA_LIGHT
         )
+        border_color = "#3a3a3e" if dark else "#ddd"
+        self._gt_frame.setStyleSheet(f"QFrame {{ border: 2px solid {border_color}; border-radius: 4px; }}")
+        self._pred_frame.setStyleSheet(f"QFrame {{ border: 2px solid {border_color}; border-radius: 4px; }}")
         self._gt_panel.update_theme(dark)
         self._pred_panel.update_theme(dark)
 
