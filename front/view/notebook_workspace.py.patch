@@ -1,0 +1,41 @@
+*** Begin Patch
+*** Update File: E:\Code\AI_exercise\front\view\notebook_workspace.py
+@@ def _on_module_selected(self, key):
+         if key == 'homepage':
+             self.back_to_homepage.emit()
+             return
+-        # Datasets page is always accessible (no data required)
+-        if key in ('upload', 'datasets'):
++        # Datasets page and overview dashboard are always accessible
++        # (no active dataset required). Overview aggregates across the
++        # notebook scope and shows an empty-state when nothing exists.
++        if key in ('upload', 'datasets', 'overview'):
+             idx = self._module_map.get(key, 0)
+             if key == 'datasets':
+                 logger.info('_on_module_selected: datasets clicked, refreshing')
+                 self._datasets_view.refresh()
+                 logger.info('_on_module_selected: datasets page refreshed')
++            elif key == 'overview':
++                # Overview aggregates all datasets in this notebook, so
++                # a fresh snapshot is cheap and keeps the dashboard honest.
++                self._overview_view.refresh()
+             self._stack.setCurrentIndex(idx)
+             return
+         # Analysis modules need data
+-        if key in ('clustering', 'statistics', 'plots', 'heatmaps',
+-                    'overview'):
++        if key in ('clustering', 'statistics', 'plots', 'heatmaps'):
+             if self._current_dataset is None:
+                 self.show_status_message('No dataset loaded. Please upload data first.')
+                 self._stack.setCurrentWidget(self._empty_widget)
+                 return
+@@ Refresh views that depend on DataPathManager data
+         elif key == 'heatmaps':
+             self._heatmap_view.set_overlay_datasets(self._overlay_datasets)
+             self._heatmap_view.set_ari_map(self._ari_map)
+             self._heatmap_view.load_data()
+-        elif key == 'overview':
+-            # Overview aggregates all datasets in this notebook, so
+-            # a fresh snapshot is cheap and keeps the dashboard honest.
+-            self._overview_view.refresh()
+*** End Patch
