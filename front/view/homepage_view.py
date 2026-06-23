@@ -128,6 +128,7 @@ class CreateNotebookDialog(QDialog):
 
         title = QLabel("Create New Notebook")
         title.setStyleSheet("font-size: 18px; font-weight: 700; color: #1a1a1a;")
+        self._title_label = title
         ly.addWidget(self._title_label)
 
         name_lbl = QLabel("Notebook Name")

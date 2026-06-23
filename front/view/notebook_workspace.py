@@ -132,6 +132,7 @@ class NotebookWorkspace(QWidget):
         self._dark = dark
         self._collection = None
         self._overlay_datasets = []
+        self._ari_map = {}  # initialized to avoid AttributeError before first load
         self._build_ui()
         self._refresh_datasets()
         self._datasets_view.refresh()
@@ -326,11 +327,40 @@ class NotebookWorkspace(QWidget):
         try:
             ds_id = self._dataset_combo.itemData(idx)
             if ds_id is None:
+                # User selected the placeholder "-- Select dataset --".
+                # Clear current state and reset dependent views.
                 self._current_dataset = None
+                self._clear_subviews_for_no_dataset()
                 return
             self._select_dataset(ds_id)
         except Exception as e:
             logger.error('_on_dataset_changed failed: %s', e, exc_info=True)
+
+    def _clear_subviews_for_no_dataset(self) -> None:
+        """Reset analysis subviews to a 'no data' state.
+
+        Used when the user explicitly deselects a dataset (placeholder row).
+        """
+        try:
+            self._clustering_page.show_no_data()
+        except Exception:
+            pass
+        self._overlay_datasets = []
+        self._ari_map = {}
+        try:
+            self._heatmap_view.set_overlay_datasets([])
+            self._heatmap_view.set_ari_map({})
+            self._heatmap_view.load_data()
+        except Exception:
+            pass
+        try:
+            self._plots_view.load_data()
+        except Exception:
+            pass
+        try:
+            self._statistics_view.load_data()
+        except Exception:
+            pass
 
     def _on_dataset_loaded(self, dataset_id):
         self._select_dataset(dataset_id)
@@ -394,10 +424,12 @@ class NotebookWorkspace(QWidget):
             )
             self._refresh_datasets()
             self._datasets_view.refresh()
+            self._dataset_combo.blockSignals(True)
             for i in range(self._dataset_combo.count()):
                 if self._dataset_combo.itemData(i) == ds.id:
                     self._dataset_combo.setCurrentIndex(i)
                     break
+            self._dataset_combo.blockSignals(False)
             self._nb_mgr.touch(self._notebook.id)
             self.notebook_updated.emit()
         except Exception as e:
@@ -446,6 +478,9 @@ class NotebookWorkspace(QWidget):
                 self._overlay_datasets = []
                 logger.debug('Overlay loading skipped (no CSV metadata)')
             self._ari_map = self._load_ari_map()
+            # Push updated data to subviews so navigation always sees fresh data
+            self._heatmap_view.set_overlay_datasets(self._overlay_datasets)
+            self._heatmap_view.set_ari_map(self._ari_map)
             self.show_status_message(
                 'Ready - %d images, %d sections' % (n, len(self._overlay_datasets))
             )
@@ -486,13 +521,25 @@ class NotebookWorkspace(QWidget):
         if not ari_path.is_file():
             return ari_map
         try:
-            import pandas as pd
-            df = pd.read_csv(ari_path)
-            if "sample" in df.columns and "ari" in df.columns:
-                last_epoch = df["epoch"].max()
-                last_rows = df[df["epoch"] == last_epoch]
-                for _, row in last_rows.iterrows():
-                    ari_map[str(row["sample"]).strip()] = float(row["ari"])
+            from model.data_normalizer import read_metric_csv
+            df = read_metric_csv(ari_path, "ari")
+            if df is None or df.empty or "epoch" not in df.columns:
+                return ari_map
+            # Wide format: rows are epochs, columns are sample IDs.
+            # The last row contains the final-epoch values.
+            df = df.sort_values("epoch")
+            last_row = df.iloc[-1]
+            import math
+            for col in df.columns:
+                if str(col).strip().lower() == "epoch":
+                    continue
+                try:
+                    v = float(last_row[col])
+                except (TypeError, ValueError):
+                    continue
+                if math.isnan(v):
+                    continue
+                ari_map[str(col).strip()] = v
         except Exception as exc:
             logger.warning("Failed to load ARI map: %s", exc)
         return ari_map

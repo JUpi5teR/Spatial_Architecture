@@ -57,7 +57,7 @@ def load_spatial_dataset(data_root: str, section_id: str,
             im = cv2.imdecode(raw, cv2.IMREAD_COLOR)
             if im is not None:
                 hires_dim = float(max(im.shape[0], im.shape[1]))
-        except:
+        except Exception:
             pass
 
     # Read positions (filter in_tissue=1)
@@ -133,7 +133,7 @@ def load_results_dataset(results_root: str, section_id: str) -> Optional[Spatial
             im = cv2.imdecode(raw, cv2.IMREAD_COLOR)
             if im is not None:
                 hires_dim = float(max(im.shape[0], im.shape[1]))
-        except:
+        except Exception:
             pass
 
     positions = {}

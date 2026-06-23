@@ -63,6 +63,12 @@ class PlotsViewWidget(QWidget):
             for ax in self._figure.axes:
                 ax.set_facecolor("#2a2a2e" if dark else "#ffffff")
                 ax.tick_params(colors=fg)
+            # Re-render so the visual change is visible immediately
+            try:
+                if self._canvas is not None:
+                    self._canvas.draw()
+            except Exception:
+                pass
 
     def _build_ui(self) -> None:
         root_ly = QVBoxLayout(self)
@@ -129,7 +135,11 @@ class PlotsViewWidget(QWidget):
             self._draw_placeholder("No metrics available")
             return
 
-        # Load all metrics data, pivoted to wide (epoch x sample)
+        # Load all metrics data via the unified reader. The reader
+        # transparently handles both wide and long formats by matching
+        # column names (epoch / sample / metric).
+        from model.data_normalizer import read_metric_csv
+
         all_data = {}
         all_samples = set()
         for metric in metrics:
@@ -137,27 +147,14 @@ class PlotsViewWidget(QWidget):
             if not csv_path.is_file():
                 continue
             try:
-                df = pd.read_csv(csv_path)
+                df = read_metric_csv(csv_path, metric)
             except Exception as exc:
                 logger.error("Failed to read %s: %s", csv_path, exc)
                 continue
-            if df.empty:
+            if df is None or df.empty:
                 continue
-            # Pivot if long format
-            sample_col_key = None
-            for c in df.columns:
-                if c.lower().strip() == "sample":
-                    sample_col_key = c
-                    break
-            if sample_col_key is not None:
-                value_cols = [c for c in df.columns if c.lower().strip() not in ("epoch", "sample")]
-                if not value_cols:
-                    continue
-                value_col = value_cols[0]
-                df = df.pivot_table(index="epoch", columns=sample_col_key, values=value_col, aggfunc="first")
-                df = df.reset_index()
-            # Collect sample names
-            sample_cols = [c for c in df.columns if c.lower().strip() not in ("epoch",)]
+            # Collect sample names (all non-epoch columns)
+            sample_cols = [c for c in df.columns if str(c).strip().lower() != "epoch"]
             for sc in sample_cols:
                 all_samples.add(str(sc))
             all_data[metric] = df
@@ -186,6 +183,8 @@ class PlotsViewWidget(QWidget):
                     continue
                 if "epoch" in df.columns:
                     x = df["epoch"].values
+                elif "Epoch" in df.columns:
+                    x = df["Epoch"].values
                 else:
                     x = range(len(df))
 

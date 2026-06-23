@@ -68,6 +68,12 @@ class StatisticsViewWidget(QWidget):
                 ax.xaxis.label.set_color(fg)
                 ax.yaxis.label.set_color(fg)
                 ax.title.set_color(fg)
+            # Re-render so the visual change is visible immediately
+            try:
+                if self._canvas is not None:
+                    self._canvas.draw()
+            except Exception:
+                pass
 
     def _build_ui(self) -> None:
         root_ly = QVBoxLayout(self)
@@ -150,7 +156,8 @@ class StatisticsViewWidget(QWidget):
             return
 
         try:
-            df = pd.read_csv(csv_path)
+            from model.data_normalizer import read_metric_csv
+            df = read_metric_csv(csv_path, self._metric)
         except Exception as exc:
             logger.error("Failed to read %s: %s", csv_path, exc)
             self._draw_placeholder(f"Read error: {exc}")
@@ -160,20 +167,8 @@ class StatisticsViewWidget(QWidget):
             self._draw_placeholder("CSV is empty")
             return
 
-        # Detect long format (epoch, sample, metric_value) and pivot to wide
-        sample_col_key = None
-        for c in df.columns:
-            if str(c).lower().strip() == "sample":
-                sample_col_key = c
-                break
-        if sample_col_key is not None:
-            value_cols = [c for c in df.columns if str(c).lower().strip() not in ("epoch", "sample")]
-            if not value_cols:
-                self._draw_placeholder("No numeric column in CSV")
-                return
-            value_col = value_cols[0]
-            df = df.pivot_table(index="epoch", columns=sample_col_key, values=value_col, aggfunc="first")
-            df = df.reset_index()
+        # read_metric_csv already normalizes long -> wide and matches column
+        # names; the result has `epoch` plus one column per sample.
 
         # Get last epoch row for final values
         last_row = df.iloc[-1]

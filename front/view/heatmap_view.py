@@ -40,6 +40,17 @@ class HeatmapViewWidget(QWidget):
         bg = "#1e1e21" if dark else "#fafafa"
         fg = "#d0d0d5" if dark else "#1a1a1a"
         self.setStyleSheet(f"HeatmapViewWidget {{ background-color: {bg}; }}")
+        # If a figure has already been drawn, repaint its background colors.
+        if self._figure is not None:
+            self._figure.patch.set_facecolor(bg)
+            for ax in self._figure.axes:
+                ax.set_facecolor("#2a2a2e" if dark else "#ffffff")
+                ax.tick_params(colors=fg)
+            # Re-render so the visual change is visible immediately
+            try:
+                self._canvas.draw()
+            except Exception:
+                pass
 
     def _build_ui(self):
         ly = QVBoxLayout(self)
@@ -105,10 +116,16 @@ class HeatmapViewWidget(QWidget):
             ax.set_yticks([])
             return
 
+        # Build confusion matrix. Pre-compute name->index maps so the
+        # per-entry lookups are O(1) rather than O(n) via list.index().
+        gt_idx = {g: i for i, g in enumerate(gt)}
+        pr_idx = {p: i for i, p in enumerate(pr)}
         mat = np.zeros((len(gt), len(pr)), dtype=int)
         for (g, p), n in ds.confusion.items():
-            if g in gt and p in pr:
-                mat[gt.index(g), pr.index(p)] = n
+            gi = gt_idx.get(g)
+            pi = pr_idx.get(p)
+            if gi is not None and pi is not None:
+                mat[gi, pi] = n
 
         # Draw heatmap
         im = ax.imshow(mat, cmap="Blues", aspect="auto")

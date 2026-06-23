@@ -128,9 +128,19 @@ class UploadViewWidget(QWidget):
 
         self._structure: Optional[DataStructure] = None
         self._pending_path: Optional[Path] = None
+        # Track zip extraction temp dirs for cleanup
+        self._temp_dirs: list[Path] = []
 
         self._dark = False
         self._build_ui()
+
+    def closeEvent(self, event) -> None:
+        """Clean up tracked zip extraction temp directories on close."""
+        try:
+            self._cleanup_temp_dirs(keep=None)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
 
 
@@ -231,6 +241,17 @@ class UploadViewWidget(QWidget):
         self._path_label.setWordWrap(True)
 
         root_ly.addWidget(self._path_label)
+
+        # ---- Normalization feedback label ----
+        self._norm_label = QLabel("")
+        self._norm_label.setStyleSheet(
+            "color: #2e7d32; font-size: 12px; font-weight: 600;"
+            " padding: 4px 0 0 0;"
+        )
+        self._norm_label.setWordWrap(True)
+        self._norm_label.setVisible(False)
+        root_ly.addWidget(self._norm_label)
+        self._norm_label.setProperty("role", "norm_status")
 
 
 
@@ -363,9 +384,18 @@ class UploadViewWidget(QWidget):
             te.setStyleSheet(
                 f'QTextEdit {{ background: {"#1a1a1e" if dark else "#fff"}; color: {fg}; border: 1px solid {"#3a3a3e" if dark else "#e0e0e0"}; border-radius: 6px; padding: 10px; }}'
             )
-        if hasattr(self, '_guide_text'):
-            self._guide_text.setStyleSheet(
-                f'QTextEdit {{ background: {"#1a1a1e" if dark else "#fafafa"}; color: {"#8a8a90" if dark else "#666"}; border: 1px solid {"#3a3a3e" if dark else "#e8e8e8"}; border-radius: 6px; padding: 10px; }}'
+        if hasattr(self, '_norm_label') and self._norm_label.isVisible():
+            # Theme-aware color depends on status kind (ok/warn/error)
+            kind = self._norm_label.property("status_kind") or "ok"
+            color_map = {
+                "ok":    "#81c784" if dark else "#2e7d32",  # green
+                "warn":  "#ffb74d" if dark else "#e65100",  # orange
+                "error": "#ef9a9a" if dark else "#c62828",  # red
+            }
+            norm_color = color_map.get(kind, color_map["ok"])
+            self._norm_label.setStyleSheet(
+                f"color: {norm_color}; font-size: 12px; font-weight: 600;"
+                f" padding: 4px 0 0 0;"
             )
     def _on_select_folder(self) -> None:
 
@@ -410,6 +440,8 @@ class UploadViewWidget(QWidget):
         try:
 
             extract_dir = Path(tempfile.mkdtemp(prefix="clustroview_"))
+            # Track the original temp dir for later cleanup
+            self._temp_dirs.append(extract_dir)
 
             with zipfile.ZipFile(zip_path, "r") as zf:
 
@@ -421,6 +453,9 @@ class UploadViewWidget(QWidget):
 
             if len(children) == 1 and children[0].is_dir():
 
+                # The actual data lives in the single subfolder; track the
+                # parent for cleanup.
+                self._temp_dirs[-1] = extract_dir
                 extract_dir = children[0]
 
             self._progress.setValue(100)
@@ -475,11 +510,53 @@ class UploadViewWidget(QWidget):
 
         self._path_label.setStyleSheet("color: #888; font-size: 12px;")
 
+        if hasattr(self, "_norm_label"):
+            self._norm_label.setVisible(False)
+            self._norm_label.setText("")
+
         self._btn_clear.setEnabled(False)
 
         self._validation_label.setVisible(False)
 
+        # Clean up any zip extraction temp dirs from the cleared session.
+        # We only clean up dirs that are NOT currently registered as the
+        # pending path, so re-registering the same extracted folder is safe.
+        self._cleanup_temp_dirs(keep=self._pending_path)
+
         self.folder_registered.emit(None)
+
+    def _cleanup_temp_dirs(self, keep: Optional[Path] = None) -> None:
+        """Remove any tracked zip extraction temp directories.
+
+        Args:
+            keep: a path (or its parent) that must NOT be removed, because it
+                is still in use (e.g., the user is still editing it).
+        """
+        keep_resolved = None
+        try:
+            if keep is not None:
+                keep_resolved = keep.resolve()
+        except Exception:
+            keep_resolved = None
+
+        remaining: list[Path] = []
+        import shutil
+        for d in getattr(self, "_temp_dirs", []):
+            try:
+                d_resolved = d.resolve()
+            except Exception:
+                continue
+            if keep_resolved is not None and (
+                d_resolved == keep_resolved or keep_resolved in d_resolved.parents
+            ):
+                remaining.append(d)
+                continue
+            try:
+                shutil.rmtree(d, ignore_errors=True)
+                logger.info("Cleaned up temp dir: %s", d)
+            except Exception as exc:
+                logger.warning("Failed to clean up temp dir %s: %s", d, exc)
+        self._temp_dirs = remaining
 
 
 
@@ -497,6 +574,10 @@ class UploadViewWidget(QWidget):
 
         self._structure = structure
 
+        # Normalize Results / train_log CSVs for the newly uploaded root only.
+        # This never touches any pre-existing data on disk.
+        norm_msg = self._normalize_uploaded_data(root, structure)
+
         self._show_structure(structure)
 
         self._show_validation(structure)
@@ -510,8 +591,111 @@ class UploadViewWidget(QWidget):
 
         self._path_label.setStyleSheet("color: #1a6bc0; font-size: 12px;")
 
+        # Show normalization feedback alongside the path label
+        if norm_msg:
+            self._norm_label.setText(norm_msg)
+            self._norm_label.setVisible(True)
+        else:
+            self._norm_label.setVisible(False)
+
         # Store pending path for Confirm button; do NOT emit yet
         self._pending_path = root
+
+    def _normalize_uploaded_data(self, root: Path, structure: DataStructure) -> str:
+        """Run data normalizer on the just-uploaded root. Returns a short
+        status message (empty string if nothing to do)."""
+        try:
+            from model.data_normalizer import (
+                normalize_results_dir,
+                normalize_train_log_dir,
+            )
+        except Exception as exc:
+            logger.warning("Could not import data_normalizer: %s", exc)
+            return ""
+
+        results_dir = structure.results_root
+        train_log_dir = structure.train_log_dir
+
+        # Only operate inside the uploaded root, never on pre-existing data
+        def _safe(p):
+            if p is None:
+                return None
+            try:
+                p_resolved = p.resolve()
+                root_resolved = root.resolve()
+                # Ensure p is a sub-path of root
+                if root_resolved == p_resolved or root_resolved in p_resolved.parents:
+                    return p_resolved
+            except Exception:
+                return None
+            return None
+
+        results_dir = _safe(results_dir)
+        train_log_dir = _safe(train_log_dir)
+
+        results_modified = 0
+        train_modified = 0
+        results_err = 0
+        train_err = 0
+
+        if results_dir is not None:
+            try:
+                report = normalize_results_dir(results_dir, dry_run=False)
+                results_modified = report.modified_count
+                results_err = report.error_count
+            except Exception as exc:
+                logger.warning("Normalize results failed: %s", exc)
+                results_err = 1
+
+        if train_log_dir is not None:
+            try:
+                report = normalize_train_log_dir(train_log_dir, dry_run=False)
+                train_modified = report.modified_count
+                train_err = report.error_count
+            except Exception as exc:
+                logger.warning("Normalize train_log failed: %s", exc)
+                train_err = 1
+
+        if results_modified == 0 and train_modified == 0 and \
+                results_err == 0 and train_err == 0:
+            return ""
+
+        # Build status message that clearly distinguishes success vs failure.
+        has_errors = results_err > 0 or train_err > 0
+        has_changes = results_modified > 0 or train_modified > 0
+
+        if has_errors and not has_changes:
+            prefix = "Data normalization errors"
+            color = "#c62828"  # red
+        elif has_errors and has_changes:
+            prefix = "Data normalized (with warnings)"
+            color = "#e65100"  # orange
+        else:
+            prefix = "Data normalized"
+            color = "#2e7d32"  # green
+
+        parts = []
+        if results_modified or results_err:
+            parts.append(
+                f"Results: {results_modified} modified, {results_err} error(s)"
+            )
+        if train_modified or train_err:
+            parts.append(
+                f"train_log: {train_modified} modified, {train_err} error(s)"
+            )
+        msg = prefix + " - " + "; ".join(parts)
+
+        # Also tag the label so set_dark can color it appropriately
+        if hasattr(self, "_norm_label"):
+            self._norm_label.setProperty("status_kind",
+                                         "error" if has_errors and not has_changes
+                                         else "warn" if has_errors
+                                         else "ok")
+            self._norm_label.setStyleSheet(
+                f"color: {color}; font-size: 12px; font-weight: 600;"
+                f" padding: 4px 0 0 0;"
+            )
+        return msg
 
 
 

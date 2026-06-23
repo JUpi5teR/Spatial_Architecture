@@ -226,11 +226,17 @@ class HoverPanel(QFrame):
         self._mode_btn.setChecked(mode == "analysis")
 
     def set_cluster_info(self, cluster, count, meta):
-        self._cluster_info.setText(
-            "Cluster: " + str(cluster) + "\n"
-            "Count: " + str(count) + "\n"
-            + str(meta) if meta else ""
-        )
+        if meta:
+            self._cluster_info.setText(
+                "Cluster: " + str(cluster) + "\n"
+                "Count: " + str(count) + "\n"
+                + str(meta)
+            )
+        else:
+            self._cluster_info.setText(
+                "Cluster: " + str(cluster) + "\n"
+                "Count: " + str(count)
+            )
 
     def set_sections(self, section_ids):
         self._section_combo.blockSignals(True)

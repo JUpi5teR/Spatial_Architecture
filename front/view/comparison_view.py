@@ -187,22 +187,34 @@ class ZoomableImageLabel(QLabel):
         painter = QPainter(pm)
         painter.drawPixmap(self._pan_offset, scaled)
 
-        # Draw scatter points on top of the image
+        # Draw scatter points on top of the image.
+        # Optimisation: group points by color so we set the brush only once
+        # per group instead of once per point. Each group is then drawn in
+        # a tight inner loop, avoiding repeated QBrush/QPen state changes.
         if self._scatter_x is not None and len(self._scatter_x) > 0:
             scale_x = scaled.width() / ow
             scale_y = scaled.height() / oh
             base_radius = max(3.0, min(ow, oh) * 0.006)
+            radius = base_radius * self._zoom_factor
+            radius = max(2.0, min(radius, 14.0))
 
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+
+            # Bucket point indices by color key
+            color_buckets: dict[tuple, list[int]] = {}
             for i in range(len(self._scatter_x)):
-                sx = self._scatter_x[i] * scale_x + self._pan_offset.x()
-                sy = self._scatter_y[i] * scale_y + self._pan_offset.y()
-                radius = base_radius * self._zoom_factor
-                radius = max(2.0, min(radius, 14.0))
-                color = self._scatter_colors[i]
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(QColor(*color)))
-                painter.drawEllipse(QPointF(sx, sy), radius, radius)
+                c = self._scatter_colors[i]
+                key = tuple(c) if isinstance(c, (list, tuple)) else c
+                color_buckets.setdefault(key, []).append(i)
+
+            for color_key, indices in color_buckets.items():
+                qcolor = QColor(*color_key) if isinstance(color_key, tuple) else QColor(color_key)
+                painter.setBrush(QBrush(qcolor))
+                for i in indices:
+                    sx = self._scatter_x[i] * scale_x + self._pan_offset.x()
+                    sy = self._scatter_y[i] * scale_y + self._pan_offset.y()
+                    painter.drawEllipse(QPointF(sx, sy), radius, radius)
 
         painter.end()
         self.setPixmap(pm)
@@ -663,6 +675,17 @@ class ComparisonViewWidget(QWidget):
         res_dir = Path(self._res_root) / section_id if self._res_root else None
         res_csv_path = res_dir / "spatial" / "tissue_positions_list.csv" if res_dir else None
 
+        # Prefer the Results' own scale factor if present; fallback to GT scale.
+        res_scale = scale
+        if res_dir is not None:
+            res_scale_path = res_dir / "spatial" / "scalefactors_json.json"
+            if res_scale_path.exists():
+                try:
+                    with open(res_scale_path) as f:
+                        res_scale = float(json.load(f).get("tissue_hires_scalef", scale))
+                except Exception:
+                    res_scale = scale
+
         res_sx, res_sy, res_colors = [], [], []
         res_has_data = False
 
@@ -679,8 +702,8 @@ class ComparisonViewWidget(QWidget):
                         continue
                     px_row = float(row.get("pxl_row", 0))
                     px_col = float(row.get("pxl_col", 0))
-                    hx = px_row * scale  # image y
-                    hy = px_col * scale  # image x
+                    hx = px_row * res_scale  # image y
+                    hy = px_col * res_scale  # image x
 
                     if domain:
                         # Map domain to layer color
