@@ -25,6 +25,7 @@ from view.statistics_view import StatisticsViewWidget
 from view.plots_view import PlotsViewWidget
 from view.heatmap_view import HeatmapViewWidget
 from view.datasets_view import DatasetsViewWidget
+from view.overview_dashboard import OverviewDashboardWidget
 from view.loading_overlay import LoadingOverlay
 
 SECTION_IDS = [
@@ -147,6 +148,7 @@ class NotebookWorkspace(QWidget):
         self._heatmap_view.set_dark(self._dark)
         self._datasets_view.set_dark(self._dark)
         self._upload_view.set_dark(self._dark)
+        self._overview_view.set_dark(self._dark)
         self._update_topbar_theme()
 
     @property
@@ -210,6 +212,8 @@ class NotebookWorkspace(QWidget):
         self._datasets_view.dataset_activated.connect(self._on_dataset_loaded)
         self._datasets_view.dataset_renamed.connect(self._on_dataset_renamed)
         self._datasets_view.dataset_deleted.connect(self._on_dataset_deleted)
+        # Overview dashboard - reuses the placeholder slot in the stack.
+        self._overview_view = OverviewDashboardWidget(self._notebook, parent=self)
         self._empty_label = None
         self._placeholder_label = None
         self._empty_widget = self._make_empty('No dataset loaded.\nPlease upload data first.')
@@ -222,12 +226,12 @@ class NotebookWorkspace(QWidget):
         self._stack.addWidget(self._plots_view)          # 3
         self._stack.addWidget(self._heatmap_view)        # 4
         self._stack.addWidget(self._empty_widget)        # 5
-        self._stack.addWidget(self._page_placeholder)    # 6
+        self._stack.addWidget(self._overview_view)       # 6
         self._stack.addWidget(self._datasets_view)       # 7  DATASETS
         self._module_map = {
             'upload': 0, 'clustering': 1, 'statistics': 2,
             'plots': 3, 'heatmaps': 4,
-            'overview': 7, 'datasets': 7,
+            'overview': 6, 'datasets': 7,
         }
         body.addWidget(self._stack)
         root.addLayout(body)
@@ -304,6 +308,10 @@ class NotebookWorkspace(QWidget):
             self._heatmap_view.set_overlay_datasets(self._overlay_datasets)
             self._heatmap_view.set_ari_map(self._ari_map)
             self._heatmap_view.load_data()
+        elif key == 'overview':
+            # Overview aggregates all datasets in this notebook, so
+            # a fresh snapshot is cheap and keeps the dashboard honest.
+            self._overview_view.refresh()
 
     # ----------------------------------------------------------------
     # Dataset management
@@ -350,6 +358,9 @@ class NotebookWorkspace(QWidget):
             self._current_dataset = ds
             self._datasets_view.set_current_dataset(ds.id)
             self._load_data(ds)
+            # Refresh the overview dashboard so newly-loaded
+            # datasets are reflected in the KPI / chart strip.
+            self._overview_view.refresh()
             self.show_status_message('Loaded: ' + ds.name)
         except Exception as e:
             logger.error('_select_dataset failed: %s', e, exc_info=True)
@@ -399,6 +410,8 @@ class NotebookWorkspace(QWidget):
                     self._dataset_combo.setCurrentIndex(i)
                     break
             self._nb_mgr.touch(self._notebook.id)
+            # Keep the overview dashboard aligned with the new upload.
+            self._overview_view.refresh()
             self.notebook_updated.emit()
         except Exception as e:
             logger.error('Upload failed: %s', e, exc_info=True)
@@ -568,4 +581,5 @@ class NotebookWorkspace(QWidget):
         self._heatmap_view.set_dark(dark)
         self._datasets_view.set_dark(dark)
         self._upload_view.set_dark(dark)
+        self._overview_view.set_dark(dark)
         self._update_topbar_theme()
