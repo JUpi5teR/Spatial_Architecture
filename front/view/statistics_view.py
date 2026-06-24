@@ -160,24 +160,38 @@ class StatisticsViewWidget(QWidget):
             self._draw_placeholder("CSV is empty")
             return
 
+        # Strip whitespace from column names
+        df.columns = [str(c).strip() for c in df.columns]
+
         # Detect long format (epoch, sample, metric_value) and pivot to wide
         sample_col_key = None
         for c in df.columns:
-            if str(c).lower().strip() == "sample":
+            if c.lower() == "sample":
                 sample_col_key = c
                 break
         if sample_col_key is not None:
-            value_cols = [c for c in df.columns if str(c).lower().strip() not in ("epoch", "sample")]
+            value_cols = [c for c in df.columns if c.lower() not in ("epoch", "sample")]
             if not value_cols:
                 self._draw_placeholder("No numeric column in CSV")
                 return
-            value_col = value_cols[0]
-            df = df.pivot_table(index="epoch", columns=sample_col_key, values=value_col, aggfunc="first")
-            df = df.reset_index()
+            # Use the LAST value column (skips extra columns like "seed")
+            # The metric column is typically the last one in long format
+            value_col = value_cols[-1]
+            try:
+                df = df.pivot_table(index="epoch", columns=sample_col_key, values=value_col, aggfunc="first")
+                df = df.reset_index()
+            except Exception as exc:
+                logger.warning("Pivot failed for %s: %s", csv_path, exc)
+                self._draw_placeholder(f"Data format error: {exc}")
+                return
+
+        if df.empty:
+            self._draw_placeholder("No data after processing")
+            return
 
         # Get last epoch row for final values
         last_row = df.iloc[-1]
-        sample_cols = [c for c in df.columns if str(c).lower().strip() not in ("epoch",)]
+        sample_cols = [c for c in df.columns if str(c).lower() not in ("epoch", "")]
         if not sample_cols:
             self._draw_placeholder("No sample columns")
             return

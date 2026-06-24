@@ -386,11 +386,16 @@ class DualAxisBarChart(QFrame):
             label_font = QFont(_FONT_STACK, 8)
             label_font.setWeight(QFont.Weight.Medium)
             p.setFont(label_font)
-            p.drawText(QRectF(cx - slot_w / 2, plot.bottom() + 8,
-                              slot_w, 40),
-                       Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter
-                       | Qt.TextFlag.TextWordWrap,
-                       bar.label)
+            # Rotate labels to avoid overlap with long dataset names
+            p.save()
+            p.translate(cx, plot.bottom() + 12)
+            p.rotate(-40)
+            # Truncate label if too long
+            label_text = bar.label
+            if len(label_text) > 16:
+                label_text = label_text[:14] + "..."
+            p.drawText(0, 0, label_text)
+            p.restore()
 
     def _draw_legend(self, p: QPainter, rect: QRectF) -> None:
         ter = TXT_TER_DARK if self._dark else TXT_TER_LIGHT

@@ -34,10 +34,12 @@ SECTION_IDS = [
     "151673", "151674", "151675", "151676",
 ]
 
-def _check_results_has_csv(res_root):
+def _check_results_has_csv(res_root, section_ids=None):
     if not res_root.exists():
         return False
-    for sid in SECTION_IDS:
+    if section_ids is None:
+        section_ids = SECTION_IDS
+    for sid in section_ids:
         sec_dir = res_root / sid
         if sec_dir.is_dir():
             # Check direct CSV/TSV files and also in spatial/ subfolder
@@ -425,10 +427,21 @@ class NotebookWorkspace(QWidget):
         data_root = Path(ds.file_path)
         gt_dir = Path(ds.ground_truth_path) if ds.ground_truth_path else data_root
         res_dir = Path(ds.results_path) if ds.results_path else data_root
-        section_ids = self._scan_ids(data_root, gt_dir, res_dir)
         # Sync DataPathManager so analysis pages (plots, statistics, heatmaps)
         # can access train_log and other data via the path manager.
         self._path_mgr.set_root(data_root)
+        # Use scanned structure to resolve correct gt/res roots for irregular layouts
+        structure = self._path_mgr.structure()
+        if structure:
+            if structure.gt_root:
+                gt_dir = structure.gt_root
+            elif structure.results_root:
+                gt_dir = structure.results_root
+            if structure.results_root and structure.results_root != structure.gt_root:
+                res_dir = structure.results_root
+            section_ids = structure.section_ids
+        else:
+            section_ids = self._scan_ids(data_root, gt_dir, res_dir)
         try:
             # Try standard scan first
             self._collection = scan_images(gt_dir, res_dir, section_ids)
@@ -448,7 +461,7 @@ class NotebookWorkspace(QWidget):
                 return
             # Load overlay for 3D / cell-level display
             try:
-                has_pred = _check_results_has_csv(res_dir)
+                has_pred = _check_results_has_csv(res_dir, section_ids)
                 gt_col = 'layer_guess_reordered'
                 pred_col = 'GraphBased' if has_pred else '__no_results__'
                 self._overlay_datasets = load_all_overlay_datasets(

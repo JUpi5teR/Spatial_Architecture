@@ -1,4 +1,4 @@
-# coding: utf-8
+﻿# coding: utf-8
 # Build: spatial_viewer.py - PySide6 + PyVista spatial transcriptomics viewer
 
 import numpy as np
@@ -138,17 +138,25 @@ def load_results_dataset(results_root: str, section_id: str) -> Optional[Spatial
 
     positions = {}
     with open(pos_path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            in_tissue = row.get("in_tissue", "0").strip()
-            if in_tissue != "1":
+        for line in f:
+            line = line.strip()
+            if not line:
                 continue
-            barcode = row.get("barcode", "").strip()
-            domain = row.get("domain", "").strip()
-            if not barcode or not domain:
+            parts = line.split(",")
+            # Accept 6-column (standard 10X) or 7-column (with domain) format
+            if len(parts) < 6:
                 continue
-            px_row = float(row.get("pxl_row", 0))
-            px_col = float(row.get("pxl_col", 0))
+            barcode = parts[0].strip()
+            in_tissue = parts[1].strip()
+            if in_tissue != "1" or not barcode:
+                continue
+            px_row = float(parts[4])
+            px_col = float(parts[5])
+            # Domain: use 7th column if present and non-empty; otherwise use "Unlabeled"
+            if len(parts) >= 7 and parts[6].strip():
+                domain = parts[6].strip()
+            else:
+                domain = "Unlabeled"
             positions[barcode] = (px_row, px_col, domain)
 
     if not positions:
@@ -169,6 +177,120 @@ def load_results_dataset(results_root: str, section_id: str) -> Optional[Spatial
         cells=cells,
         clusters=dict(clusters),
     )
+
+
+# ============================================================
+# ERROR POINT CACHING  -  compute on import, cache to disk
+# ============================================================
+
+def compute_error_points(gt_ds: SpatialDataset, res_ds: SpatialDataset,
+                         tolerance: float = 0.15, strict_mode: bool = False):
+    """Compute error point classification between GT and results datasets.
+
+    Returns a dict with error summary and per-cell classification.
+    Can be called at import time to pre-compute and cache results.
+    """
+    from collections import defaultdict
+    
+    gt_barcode_set = {c.cell_id for c in gt_ds.cells}
+    gt_label_map = {c.cell_id: _normalize_label(c.cluster) for c in gt_ds.cells}
+    
+    # Build layer buffer zones for tolerance checking
+    layer_pts = {}
+    for cell in gt_ds.cells:
+        nid = _normalize_label(cell.cluster)
+        if nid is not None:
+            layer_pts.setdefault(nid, []).append((cell.x, cell.y))
+    
+    buffer_zones = {}
+    for la, lb in _LAYER_ADJACENCIES:
+        pts_a = np.array(layer_pts.get(la, []), dtype=np.float64)
+        pts_b = np.array(layer_pts.get(lb, []), dtype=np.float64)
+        if len(pts_a) < 3 or len(pts_b) < 3:
+            continue
+        bounds_a = compute_alpha_shape(pts_a)
+        bounds_b = compute_alpha_shape(pts_b)
+        zone = set()
+        for px, py in pts_b:
+            for boundary in bounds_a:
+                if _point_to_polygon_distance(px, py, boundary) < tolerance:
+                    zone.add((round(px, 4), round(py, 4)))
+                    break
+        for px, py in pts_a:
+            for boundary in bounds_b:
+                if _point_to_polygon_distance(px, py, boundary) < tolerance:
+                    zone.add((round(px, 4), round(py, 4)))
+                    break
+        if zone:
+            buffer_zones[(la, lb)] = zone
+    
+    # Classify each results cell
+    error_positions = []
+    error_labels = []
+    tolerated_list = []
+    matched_count = 0
+    unlabeled_count = 0
+    
+    for cell in res_ds.cells:
+        barcode = cell.cell_id
+        gt_id = gt_label_map.get(barcode)
+        pred_id = _normalize_label(cell.cluster)
+        
+        if barcode not in gt_barcode_set:
+            error_positions.append(barcode)
+        elif gt_id is None or pred_id is None:
+            unlabeled_count += 1
+        elif gt_id != pred_id:
+            pos_key = (round(cell.x, 4), round(cell.y, 4))
+            tolerated = False
+            if not strict_mode:
+                la, lb = min(gt_id, pred_id), max(gt_id, pred_id)
+                zone = buffer_zones.get((la, lb), set())
+                if pos_key in zone:
+                    tolerated = True
+            if tolerated:
+                tolerated_list.append(barcode)
+            else:
+                error_labels.append(barcode)
+        else:
+            matched_count += 1
+    
+    total = len(res_ds.cells)
+    return {
+        "total_cells": total,
+        "matched": matched_count,
+        "error_position_count": len(error_positions),
+        "error_label_count": len(error_labels),
+        "tolerated_count": len(tolerated_list),
+        "unlabeled_count": unlabeled_count,
+        "error_position_barcodes": error_positions,
+        "error_label_barcodes": error_labels,
+        "tolerated_barcodes": tolerated_list,
+        "tolerance": tolerance,
+        "strict_mode": strict_mode,
+    }
+
+
+def save_error_points_cache(output_path: str, error_data: dict) -> None:
+    """Save error point data as JSON cache file."""
+    import json
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(error_data, f, indent=2)
+
+
+def load_error_points_cache(cache_path: str):
+    """Load cached error point data. Returns None if not found or stale."""
+    import json
+    p = Path(cache_path)
+    if not p.exists():
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
 
 
 # ============================================================
@@ -352,6 +474,11 @@ class SpatialViewerWidget(QWidget):
         self._layer_buffer_zones: dict = {}
         self._tolerated_indices: set = set()
         self._camera_lock_observer = None
+        self._cached_errors: Optional[dict] = None
+        self._error_cache_path: Optional[str] = None
+        self._res_clusters: dict = {}
+        self._res_colors_normal = None
+        self._res_colors_error = None
 
         self._pw = 4.0
         self._ph = 3.0
@@ -430,13 +557,59 @@ class SpatialViewerWidget(QWidget):
         p.add_text("", position="upper_left", font_size=10, color="#333333", name="label_gt")
         p.add_text("", position="upper_right", font_size=10, color="#333333", name="label_mode")
 
-    def load_section(self, dataset: SpatialDataset, results_dataset: Optional[SpatialDataset] = None):
+    def _save_current_errors_cache(self, cache_path: str) -> None:
+        """Save error point classification from the current state to cache file."""
+        import json as _json
+        error_data = {
+            "total_cells": len(self._results_dataset.cells) if self._results_dataset else 0,
+            "matched": 0,
+            "error_position_count": len(getattr(self, "_res_clusters", {}).get("ERR_POSITION", [])),
+            "error_label_count": len(getattr(self, "_res_clusters", {}).get("ERR_LABEL", [])),
+            "tolerated_count": len(getattr(self, "_res_clusters", {}).get("TOLERATED", [])),
+            "unlabeled_count": len(getattr(self, "_res_clusters", {}).get("Unlabeled", [])),
+            "error_position_barcodes": [
+                self._results_dataset.cells[i].cell_id
+                for i in getattr(self, "_res_clusters", {}).get("ERR_POSITION", [])
+            ] if self._results_dataset else [],
+            "error_label_barcodes": [
+                self._results_dataset.cells[i].cell_id
+                for i in getattr(self, "_res_clusters", {}).get("ERR_LABEL", [])
+            ] if self._results_dataset else [],
+            "tolerated_barcodes": [
+                self._results_dataset.cells[i].cell_id
+                for i in getattr(self, "_res_clusters", {}).get("TOLERATED", [])
+            ] if self._results_dataset else [],
+            "tolerance": self._tolerance_radius,
+            "strict_mode": self._strict_mode,
+        }
+        save_error_points_cache(cache_path, error_data)
+
+    def load_section(self, dataset: SpatialDataset, results_dataset: Optional[SpatialDataset] = None,
+                     error_cache_path: Optional[str] = None):
         self._dataset = dataset
         self._results_dataset = results_dataset
         self._hovered_cluster = None
+        self._cached_errors = None
         self._clear_boundaries()
-        self._build_layer_buffer_zones()
+        
+        # Try to load cached error points to skip expensive buffer zone computation
+        self._error_cache_path = error_cache_path
+        if error_cache_path and results_dataset:
+            cached = load_error_points_cache(error_cache_path)
+            if cached and abs(cached.get("tolerance", 0.15) - self._tolerance_radius) < 0.001:
+                self._cached_errors = cached
+                self._layer_buffer_zones = {}
+            else:
+                self._build_layer_buffer_zones()
+        else:
+            self._build_layer_buffer_zones()
+        
         self._build_point_cloud()
+        
+        # Save error cache for future use if computed fresh (no cache was loaded)
+        if error_cache_path and results_dataset and not self._cached_errors:
+            self._save_current_errors_cache(error_cache_path)
+        
         self._update_labels()
         self._plotter.render()
 
@@ -488,6 +661,7 @@ class SpatialViewerWidget(QWidget):
     def set_tolerance(self, radius: float):
         """Update tolerance radius and recompute boundaries + colors."""
         self._tolerance_radius = max(0.02, min(0.50, radius))
+        self._cached_errors = None
         self._build_layer_buffer_zones()
         self._build_point_cloud()
         self._update_labels()
@@ -496,6 +670,7 @@ class SpatialViewerWidget(QWidget):
     def set_strict_mode(self, strict: bool):
         """Toggle strict (no boundary tolerance) vs relaxed mode."""
         self._strict_mode = strict
+        self._cached_errors = None
         self._build_point_cloud()
         self._update_labels()
         self._plotter.render()
@@ -573,42 +748,62 @@ class SpatialViewerWidget(QWidget):
                     colors_normal[i] = (0.0, 0.0, 0.0)
 
                 # Error color: comparison view
-                # Check by barcode: cell present in both datasets?
-                in_gt = barcode in gt_barcode_set
-                if not in_gt:
-                    # Position error: point only exists in results
-                    colors_error[i] = (1.0, 0.1, 0.1)
-                    error_extra_indices.add(i)
-                    res_clusters.setdefault("ERR_POSITION", []).append(i)
-                elif gt_id is None and pred_id is None:
-                    colors_error[i] = (0.0, 0.0, 0.0)
-                    res_clusters.setdefault("Unlabeled", []).append(i)
-                elif gt_id is None:
-                    colors_error[i] = (0.0, 0.0, 0.0)
-                    res_clusters.setdefault("Unlabeled", []).append(i)
-                elif pred_id is None:
-                    colors_error[i] = (0.0, 0.0, 0.0)
-                    res_clusters.setdefault("Unlabeled", []).append(i)
-                elif gt_id != pred_id:
-                    # Boundary-aware check: is this in the overlap zone?
-                    pos_key = (round(cell.x, 4), round(cell.y, 4))
-                    tolerated = False
-                    if not self._strict_mode:
-                        la, lb = min(gt_id, pred_id), max(gt_id, pred_id)
-                        zone = self._layer_buffer_zones.get((la, lb), set())
-                        if pos_key in zone:
-                            tolerated = True
-                    if tolerated:
-                        colors_error[i] = get_cluster_color("TOLERATED")
-                        self._tolerated_indices.add(i)
-                        res_clusters.setdefault("TOLERATED", []).append(i)
-                    else:
+                # Use cached error classification if available (avoids expensive buffer zone check)
+                if self._cached_errors and self._cached_errors.get("error_position_barcodes") is not None:
+                    cache = self._cached_errors
+                    if barcode in cache.get("error_position_barcodes", []):
+                        colors_error[i] = (1.0, 0.1, 0.1)
+                        error_extra_indices.add(i)
+                        res_clusters.setdefault("ERR_POSITION", []).append(i)
+                    elif barcode in cache.get("error_label_barcodes", []):
                         colors_error[i] = (1.0, 0.35, 0.1)
                         error_label_indices.add(i)
                         res_clusters.setdefault("ERR_LABEL", []).append(i)
+                    elif barcode in cache.get("tolerated_barcodes", []):
+                        colors_error[i] = get_cluster_color("TOLERATED")
+                        self._tolerated_indices.add(i)
+                        res_clusters.setdefault("TOLERATED", []).append(i)
+                    elif gt_id is None or pred_id is None:
+                        colors_error[i] = (0.0, 0.0, 0.0)
+                        res_clusters.setdefault("Unlabeled", []).append(i)
+                    else:
+                        colors_error[i] = get_cluster_color(cell.cluster)
+                        res_clusters.setdefault(cell.cluster, []).append(i)
                 else:
-                    colors_error[i] = get_cluster_color(cell.cluster)
-                    res_clusters.setdefault(cell.cluster, []).append(i)
+                    # Full computation path (fallback when no cache)
+                    in_gt = barcode in gt_barcode_set
+                    if not in_gt:
+                        colors_error[i] = (1.0, 0.1, 0.1)
+                        error_extra_indices.add(i)
+                        res_clusters.setdefault("ERR_POSITION", []).append(i)
+                    elif gt_id is None and pred_id is None:
+                        colors_error[i] = (0.0, 0.0, 0.0)
+                        res_clusters.setdefault("Unlabeled", []).append(i)
+                    elif gt_id is None:
+                        colors_error[i] = (0.0, 0.0, 0.0)
+                        res_clusters.setdefault("Unlabeled", []).append(i)
+                    elif pred_id is None:
+                        colors_error[i] = (0.0, 0.0, 0.0)
+                        res_clusters.setdefault("Unlabeled", []).append(i)
+                    elif gt_id != pred_id:
+                        pos_key = (round(cell.x, 4), round(cell.y, 4))
+                        tolerated = False
+                        if not self._strict_mode:
+                            la, lb = min(gt_id, pred_id), max(gt_id, pred_id)
+                            zone = self._layer_buffer_zones.get((la, lb), set())
+                            if pos_key in zone:
+                                tolerated = True
+                        if tolerated:
+                            colors_error[i] = get_cluster_color("TOLERATED")
+                            self._tolerated_indices.add(i)
+                            res_clusters.setdefault("TOLERATED", []).append(i)
+                        else:
+                            colors_error[i] = (1.0, 0.35, 0.1)
+                            error_label_indices.add(i)
+                            res_clusters.setdefault("ERR_LABEL", []).append(i)
+                    else:
+                        colors_error[i] = get_cluster_color(cell.cluster)
+                        res_clusters.setdefault(cell.cluster, []).append(i)
         else:
             for i, cell in enumerate(res_ds.cells):
                 pts_res[i] = [cell.x, cell.y, z_res]
@@ -1198,5 +1393,6 @@ def main():
 
     w.show()
     sys.exit(app.exec())
+
 
 

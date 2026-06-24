@@ -671,17 +671,25 @@ class ComparisonViewWidget(QWidget):
 
         if res_csv_path and res_csv_path.exists():
             with open(res_csv_path) as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    in_tissue = row.get("in_tissue", "0").strip()
-                    if in_tissue != "1":
+                for line in f:
+                    line = line.strip()
+                    if not line:
                         continue
-                    barcode = row.get("barcode", "").strip()
-                    domain = row.get("domain", "").strip()
-                    if not barcode:
+                    parts = line.split(",")
+                    # Accept 6 or 7 column format
+                    if len(parts) < 6:
                         continue
-                    px_row = float(row.get("pxl_row", 0))
-                    px_col = float(row.get("pxl_col", 0))
+                    barcode = parts[0].strip()
+                    in_tissue = parts[1].strip()
+                    if in_tissue != "1" or not barcode:
+                        continue
+                    px_row = float(parts[4])
+                    px_col = float(parts[5])
+                    # Domain: 7th column if non-empty, otherwise use "Unlabeled"
+                    if len(parts) >= 7 and parts[6].strip():
+                        domain = parts[6].strip()
+                    else:
+                        domain = ""
                     hx = px_row * scale  # image y
                     hy = px_col * scale  # image x
 

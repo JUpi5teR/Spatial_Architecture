@@ -156,25 +156,47 @@ def _is_higher_better(metric: str) -> bool:
 # CSV reader
 # ---------------------------------------------------------------------------
 def _read_metric_csv(csv_path: Path) -> Dict[str, List[float]]:
-    """Return {sample_id: [value_per_epoch, ...]} from a train_log CSV."""
+    """Return {sample_id: [value_per_epoch, ...]} from a train_log CSV.
+    Handles both long format (epoch, sample, value) and wide format
+    (epoch, sample1, sample2, ...) with column name variations.
+    """
     out: Dict[str, List[float]] = {}
     try:
         with open(csv_path, "r", encoding="utf-8", newline="") as fh:
             reader = csv.reader(fh)
-            header = next(reader, None)
-            if not header or len(header) < 3:
+            header = [h.strip().lower() for h in next(reader, [])]
+            if not header or len(header) < 2:
                 return out
-            metric_col = header[-1]
-            sample_col = header[-2] if len(header) >= 3 else "sample"
-            for row in reader:
-                if len(row) < 3:
-                    continue
-                sample = row[1].strip() if sample_col == "sample" else row[0].strip()
-                val = _safe_float(row[-1])
-                if val is None or not sample:
-                    continue
-                out.setdefault(sample, []).append(val)
-                _ = metric_col  # column is already validated by file naming
+
+            # Detect format: long format has a "sample" column; wide format doesn"t
+            is_long = "sample" in header
+            if is_long and len(header) >= 3:
+                sample_idx = header.index("sample")
+                # For long format (epoch, sample [, seed], metric),
+                # use the LAST column as the metric value to skip extra columns like "seed"
+                value_idx = len(header) - 1
+                if value_idx <= sample_idx:
+                    return out
+                for row in reader:
+                    if len(row) < 3:
+                        continue
+                    sample = row[sample_idx].strip()
+                    val = _safe_float(row[value_idx])
+                    if val is None or not sample:
+                        continue
+                    out.setdefault(sample, []).append(val)
+            else:
+                # Wide format: all non-epoch columns are sample IDs
+                sample_indices = [(i, h) for i, h in enumerate(header)
+                                  if h != "epoch" and h.strip()]
+                for row in reader:
+                    if len(row) < len(header):
+                        continue
+                    for idx, sample in sample_indices:
+                        val = _safe_float(row[idx])
+                        if val is None or not sample:
+                            continue
+                        out.setdefault(sample, []).append(val)
     except OSError as exc:
         logger.warning("Cannot read train log csv %s: %s", csv_path, exc)
     return out
