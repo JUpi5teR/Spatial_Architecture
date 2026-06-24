@@ -178,7 +178,12 @@ class StatisticsViewWidget(QWidget):
             # The metric column is typically the last one in long format
             value_col = value_cols[-1]
             try:
-                df = df.pivot_table(index="epoch", columns=sample_col_key, values=value_col, aggfunc="first")
+                # ``aggfunc="last"`` picks the most recently recorded
+                # seed at each (epoch, sample) cell, which is the
+                # value we want for the final-epoch bar chart (and
+                # especially for ``loss`` where the LAST epoch's loss
+                # is the metric's representative value).
+                df = df.pivot_table(index="epoch", columns=sample_col_key, values=value_col, aggfunc="last")
                 df = df.reset_index()
             except Exception as exc:
                 logger.warning("Pivot failed for %s: %s", csv_path, exc)

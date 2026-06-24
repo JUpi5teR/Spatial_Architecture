@@ -190,15 +190,28 @@ class DualAxisBarChart(QFrame):
         self.setObjectName("dualAxisChart")
         self.setMinimumHeight(360)
 
-    def set_data(self, metric: str, series_rows: Sequence) -> None:
+    def set_data(
+        self,
+        metric: str,
+        series_rows: Sequence,
+        label_attr: str = "sample_id",
+        mean_attr: str = "mean",
+        variance_attr: str = "variance",
+    ) -> None:
+        """Render bars.
+
+        ``series_rows`` may be DatasetSeries rows (per-sample) or
+        DatasetGroupSummary rows (per-dataset). Use ``label_attr``,
+        ``mean_attr``, ``variance_attr`` to point at the right fields.
+        """
         self._metric = metric
         self._higher_better = _is_higher_better(metric)
         bars: List[_Bar] = []
         for row in series_rows:
             bars.append(_Bar(
-                label=str(row.sample_id),
-                mean=float(row.mean),
-                variance=float(row.variance),
+                label=str(getattr(row, label_attr)),
+                mean=float(getattr(row, mean_attr)),
+                variance=float(getattr(row, variance_attr)),
             ))
         bars.sort(key=lambda b: (-b.mean if self._higher_better else b.mean))
         self._bars = bars
@@ -631,13 +644,29 @@ class MetricOverviewCard(QFrame):
         self._apply_text()
 
     def set_summary(self, summary: MetricSummary) -> None:
-        self._value_lbl.setText(_fmt(summary.grand_mean, 4))
+        # Right panel = "the strongest single sample across every
+        # dataset in this notebook". Show the strongest value as the
+        # card headline and tag it with ``dataset/sample`` so the user
+        # can see which dataset's which sample produced it.
+        best_value = float(getattr(summary, "best_value", 0.0) or 0.0)
+        self._value_lbl.setText(_fmt(best_value, 4))
         higher = _is_higher_better(summary.metric)
         arrow = "\u2191" if higher else "\u2193"
         verb = "higher is better" if higher else "lower is better"
+        best_sample_id = getattr(summary, "best_sample_id", "") or "-"
+        worst_sample_id = getattr(summary, "worst_sample_id", "") or "-"
+        best_sample_dataset = (
+            getattr(summary, "best_sample_dataset", "") or "-"
+        )
+        worst_sample_dataset = (
+            getattr(summary, "worst_sample_dataset", "") or "-"
+        )
+        worst_value = float(getattr(summary, "worst_value", 0.0) or 0.0)
+        best_label = f"{best_sample_dataset}/{best_sample_id}"
+        worst_label = f"{worst_sample_dataset}/{worst_sample_id}"
         self._extra_lbl.setText(
-            f"{arrow} {verb} - best: {summary.best_sample_id} ({_fmt(summary.best_value, 4)})"
-            f" - worst: {summary.worst_sample_id} ({_fmt(summary.worst_value, 4)})"
+            f"{arrow} {verb} - best sample: {best_label} ({_fmt(best_value, 4)})"
+            f" - worst: {worst_label} ({_fmt(worst_value, 4)})"
         )
 
     def clear(self) -> None:
@@ -717,12 +746,25 @@ class BarChartPanel(QFrame):
     def set_metric_provider(self, cb) -> None:
         self._metric_changed_cb = cb
 
-    def set_data(self, metric: str, series_rows: Sequence) -> None:
+    def set_data(
+        self,
+        metric: str,
+        series_rows: Sequence,
+        label_attr: str = "sample_id",
+        mean_attr: str = "mean",
+        variance_attr: str = "variance",
+    ) -> None:
         self._combo.blockSignals(True)
         idx = max(0, self._combo.findText(metric.upper()))
         self._combo.setCurrentIndex(idx)
         self._combo.blockSignals(False)
-        self._chart.set_data(metric, series_rows)
+        self._chart.set_data(
+            metric,
+            series_rows,
+            label_attr=label_attr,
+            mean_attr=mean_attr,
+            variance_attr=variance_attr,
+        )
 
     def clear(self) -> None:
         self._chart.clear()

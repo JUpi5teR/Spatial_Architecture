@@ -154,8 +154,11 @@ class PlotsViewWidget(QWidget):
                 value_cols = [c for c in df.columns if str(c).lower().strip() not in ("epoch", "sample")]
                 if not value_cols:
                     continue
-                value_col = value_cols[0]
-                df = df.pivot_table(index="epoch", columns=sample_col_key, values=value_col, aggfunc="first")
+                # Skip metadata-only columns like ``seed``; the metric
+                # column is the LAST non-epoch-non-sample column in
+                # the long-format layout (epoch | sample | seed | ari).
+                value_col = value_cols[-1]
+                df = df.pivot_table(index="epoch", columns=sample_col_key, values=value_col, aggfunc="last")
                 df = df.reset_index()
             # Collect sample names (column names from pivot are typically ints like 151507)
             sample_cols = [c for c in df.columns if str(c).lower().strip() not in ("epoch",)]

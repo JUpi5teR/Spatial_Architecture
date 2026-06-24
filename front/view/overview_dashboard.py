@@ -112,6 +112,101 @@ class _PanelSurface(QFrame):
         p.end()
 
 
+class _HighlightChip(QFrame):
+    """Pill-shaped card highlighting the best dataset for a single metric.
+
+    Used by the Highlights strip on the overview page to fill the gap
+    between the KPI row and the main chart row, while also giving the
+    user a quick read of which dataset wins on every metric.
+    """
+
+    def __init__(self, metric: str, color: str,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._metric = metric
+        self._color = color
+        self._dark = False
+        self._dataset_name = "-"
+        self._dataset_value: Optional[float] = None
+        self.setMinimumHeight(64)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Fixed)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(10)
+
+        self._dot = QLabel()
+        self._dot.setFixedSize(10, 10)
+        self._dot.setStyleSheet(
+            f"background: {color}; border-radius: 5px; border: none;"
+        )
+        layout.addWidget(self._dot)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(0)
+        self._metric_lbl = QLabel(metric.upper())
+        self._metric_lbl.setObjectName("highlightMetric")
+        text_col.addWidget(self._metric_lbl)
+        self._name_lbl = QLabel("-")
+        self._name_lbl.setObjectName("highlightName")
+        text_col.addWidget(self._name_lbl)
+        layout.addLayout(text_col, 1)
+
+        self._value_lbl = QLabel("-")
+        self._value_lbl.setObjectName("highlightValue")
+        self._value_lbl.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        layout.addWidget(self._value_lbl)
+
+        self._apply_text()
+
+    def set_data(self, dataset_name: str, value: Optional[float]) -> None:
+        self._dataset_name = dataset_name or "-"
+        self._dataset_value = value
+        self._name_lbl.setText(self._dataset_name)
+        self._value_lbl.setText(
+            f"{value:.4f}" if value is not None else "-"
+        )
+
+    def set_dark(self, dark: bool) -> None:
+        self._dark = dark
+        self._apply_text()
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(4, 2, self.width() - 8, self.height() - 6)
+        surface = QColor(SURFACE_DARK if self._dark else SURFACE_LIGHT)
+        _paint_card_surface(p, rect, 12.0, surface, self._dark)
+        # Subtle accent bar on the left so the chip reads as a tag.
+        accent_rect = QRectF(rect.left() + 2, rect.top() + 12,
+                             2.5, rect.height() - 24)
+        accent_path = QPainterPath()
+        accent_path.addRoundedRect(accent_rect, 1.2, 1.2)
+        p.fillPath(accent_path, QColor(self._color))
+        p.end()
+
+    def _apply_text(self) -> None:
+        dark = self._dark
+        pri = TXT_PRI_DARK if dark else TXT_PRI_LIGHT
+        ter = TXT_TER_DARK if dark else TXT_TER_LIGHT
+        sec = TXT_SEC_DARK if dark else TXT_SEC_LIGHT
+        self._metric_lbl.setStyleSheet(
+            f"font-family: {_FONT_STACK}; font-size: 10px; font-weight: 700;"
+            f" letter-spacing: 0.6px; color: {ter}; background: transparent;"
+        )
+        self._name_lbl.setStyleSheet(
+            f"font-family: {_FONT_STACK}; font-size: 13px; font-weight: 600;"
+            f" color: {pri}; background: transparent;"
+        )
+        self._value_lbl.setStyleSheet(
+            f"font-family: {_FONT_STACK}; font-size: 13px; font-weight: 600;"
+            f" color: {sec}; background: transparent;"
+        )
+
+
 class OverviewDashboardWidget(QWidget):
     """The Overview page rendered inside NotebookWorkspace."""
 
@@ -126,6 +221,7 @@ class OverviewDashboardWidget(QWidget):
         # Map metric -> thumb widget so we can refresh on data change.
         self._thumbs = {}
         self._overview_cards = {}
+        self._highlight_chips = {}
 
         self._build_ui()
         self.refresh()
@@ -141,7 +237,8 @@ class OverviewDashboardWidget(QWidget):
         self._dark = dark
         # Propagate to direct children that paint their own backgrounds.
         self._bg.set_dark(dark)
-        self._bar_panel.set_dark(dark)
+        self._dataset_bar_panel.set_dark(dark)
+        self._sample_bar_panel.set_dark(dark)
         for w in (self._kpi_datasets, self._kpi_metrics, self._kpi_ari,
                   self._kpi_loss):
             w.set_dark(dark)
@@ -149,6 +246,8 @@ class OverviewDashboardWidget(QWidget):
             thumb.set_dark(dark)
         for card in self._overview_cards.values():
             card.set_dark(dark)
+        for chip in self._highlight_chips.values():
+            chip.set_dark(dark)
         self._apply_header_text()
         self._apply_empty_text()
 
@@ -231,20 +330,60 @@ class OverviewDashboardWidget(QWidget):
         kpi_row.setSpacing(14)
         self._kpi_datasets = KpiCard("Datasets", accent=_METRIC_COLORS["ari"])
         self._kpi_metrics = KpiCard("Metrics Loaded", accent=_METRIC_COLORS["nmi"])
-        self._kpi_ari = KpiCard("ARI Mean", accent=_METRIC_COLORS["ari"])
-        self._kpi_loss = KpiCard("Loss Mean", accent=_METRIC_COLORS["loss"])
+        self._kpi_ari = KpiCard(
+            "Best ARI Sample",
+            accent=_METRIC_COLORS["ari"],
+        )
+        self._kpi_loss = KpiCard(
+            "Best Loss Sample",
+            accent=_METRIC_COLORS["loss"],
+        )
         for w in (self._kpi_datasets, self._kpi_metrics, self._kpi_ari, self._kpi_loss):
             kpi_row.addWidget(w, 1)
         root.addLayout(kpi_row)
 
+        # ---- Highlights strip ----
+        # One chip per metric, showing the best dataset name and its
+        # combined-mean value. Sits between the KPI strip and the main
+        # chart row to fill the gap and give a quick at-a-glance read.
+        highlights_panel = _PanelSurface()
+        highlights_ly = QVBoxLayout(highlights_panel)
+        highlights_ly.setContentsMargins(18, 14, 18, 14)
+        highlights_ly.setSpacing(10)
+        highlights_header = QHBoxLayout()
+        highlights_header.setSpacing(8)
+        h_title = QLabel("Best Dataset by Metric")
+        h_title.setObjectName("highlightsTitle")
+        highlights_header.addWidget(h_title)
+        highlights_header.addStretch()
+        h_sub = QLabel("Highest pooled-mean dataset per metric.")
+        h_sub.setObjectName("highlightsSubtitle")
+        highlights_header.addWidget(h_sub)
+        highlights_ly.addLayout(highlights_header)
+        chips_row = QHBoxLayout()
+        chips_row.setSpacing(12)
+        for metric in METRICS:
+            color = _METRIC_COLORS.get(metric, PRIMARY_COLOR)
+            chip = _HighlightChip(metric, color=color)
+            chip.setMinimumWidth(170)
+            self._highlight_chips[metric] = chip
+            chips_row.addWidget(chip, 1)
+        highlights_ly.addLayout(chips_row)
+        root.addWidget(highlights_panel)
+
         # ---- Main: bar chart + metric overview ----
         main_row = QHBoxLayout()
         main_row.setSpacing(18)
-        # Bar chart panel (large)
-        self._bar_panel = BarChartPanel()
-        self._bar_panel.set_metric_provider(self._on_metric_changed)
-        self._bar_panel.setMinimumHeight(440)
-        main_row.addWidget(self._bar_panel, 3)
+        # Top-level bar chart panel: aggregates by dataset name
+        # (sts/all/none) using combined mean & variance pooled across
+        # every sample+epoch that belongs to a dataset with that name.
+        self._sample_bar_panel = BarChartPanel()
+        self._sample_bar_panel.set_metric_provider(self._on_sample_metric_changed)
+        self._sample_bar_panel.setMinimumHeight(360)
+        self._dataset_bar_panel = BarChartPanel()
+        self._dataset_bar_panel.set_metric_provider(self._on_dataset_metric_changed)
+        self._dataset_bar_panel.setMinimumHeight(440)
+        main_row.addWidget(self._dataset_bar_panel, 3)
 
         # Right column: metric overview cards stacked vertically.
         right_col = QVBoxLayout()
@@ -256,7 +395,11 @@ class OverviewDashboardWidget(QWidget):
         ov_title = QLabel("Metric Overview")
         ov_title.setObjectName("overviewSideTitle")
         ov_ly.addWidget(ov_title)
-        ov_subtitle = QLabel("Per-metric grand mean across datasets.")
+        ov_subtitle = QLabel(
+            "Strongest single sample across every dataset in this "
+            "notebook. Tagged with ``dataset/sample`` so you can see "
+            "which run produced the top result."
+        )
         ov_subtitle.setObjectName("overviewSideSubtitle")
         ov_subtitle.setWordWrap(True)
         ov_ly.addWidget(ov_subtitle)
@@ -298,6 +441,27 @@ class OverviewDashboardWidget(QWidget):
         curves_ly.addLayout(curves_grid)
         root.addWidget(curves_panel)
 
+        # ---- Per-sample bar chart (moved down from its original
+        # position above the metric overview; replaced there by the
+        # per-dataset-aggregated panel).
+        self._sample_bar_panel.setObjectName("sampleBarPanel")
+        sample_panel = _PanelSurface()
+        sample_ly = QVBoxLayout(sample_panel)
+        sample_ly.setContentsMargins(16, 14, 16, 14)
+        sample_ly.setSpacing(10)
+        sample_title = QLabel("Per-sample Mean & Variance")
+        sample_title.setObjectName("sampleBarTitle")
+        sample_ly.addWidget(sample_title)
+        sample_subtitle = QLabel(
+            "Each bar is one tissue sample; mean and variance are taken "
+            "across training epochs for that sample."
+        )
+        sample_subtitle.setObjectName("sampleBarSubtitle")
+        sample_subtitle.setWordWrap(True)
+        sample_ly.addWidget(sample_subtitle)
+        sample_ly.addWidget(self._sample_bar_panel)
+        root.addWidget(sample_panel)
+
         # ---- Empty / fallback state (hidden when data is present) ----
         self._empty_lbl = QLabel("")
         self._empty_lbl.setObjectName("overviewEmpty")
@@ -338,16 +502,26 @@ class OverviewDashboardWidget(QWidget):
         ari_summary = snap.metrics.get("ari")
         loss_summary = snap.metrics.get("loss")
         if ari_summary is not None:
+            ari_best_value = ari_summary.best_value
             self._kpi_ari.set_value(
-                f"{ari_summary.grand_mean:.4f}",
-                f"best: {ari_summary.best_sample_id} ({ari_summary.best_value:.4f})"
+                f"{ari_best_value:.4f}",
+                f"best sample: {ari_summary.best_sample_dataset or '-'}"
+                f"/{ari_summary.best_sample_id or '-'} "
+                f"({ari_best_value:.4f})"
+                if ari_summary.best_sample_id
+                else "no best sample"
             )
         else:
             self._kpi_ari.set_value("-", "no data")
         if loss_summary is not None:
+            loss_best_value = loss_summary.best_value
             self._kpi_loss.set_value(
-                f"{loss_summary.grand_mean:.4f}",
-                f"best: {loss_summary.best_sample_id} ({loss_summary.best_value:.4f})"
+                f"{loss_best_value:.4f}",
+                f"best sample: {loss_summary.best_sample_dataset or '-'}"
+                f"/{loss_summary.best_sample_id or '-'} "
+                f"({loss_best_value:.4f})"
+                if loss_summary.best_sample_id
+                else "no best sample"
             )
         else:
             self._kpi_loss.set_value("-", "no data")
@@ -356,17 +530,27 @@ class OverviewDashboardWidget(QWidget):
         has_data = bool(snap.metrics)
         self._empty_lbl.setVisible(not has_data)
         if not has_data:
-            self._bar_panel.clear()
+            self._dataset_bar_panel.clear()
+            self._sample_bar_panel.clear()
             for thumb in self._thumbs.values():
                 thumb.clear()
+            for chip in self._highlight_chips.values():
+                chip.set_data("-", None)
             self._clear_overview_cards()
             return
 
         # Bar chart
         if self._current_metric not in snap.metrics:
             self._current_metric = next(iter(snap.metrics))
-        self._bar_panel.set_data(self._current_metric,
-                                 snap.metrics[self._current_metric].series)
+        summary = snap.metrics[self._current_metric]
+        self._dataset_bar_panel.set_data(
+            self._current_metric,
+            list(summary.dataset_groups.values()),
+            label_attr="name",
+            mean_attr="combined_mean",
+            variance_attr="combined_variance",
+        )
+        self._sample_bar_panel.set_data(self._current_metric, summary.series)
 
         # Training curves
         for metric, thumb in self._thumbs.items():
@@ -375,6 +559,17 @@ class OverviewDashboardWidget(QWidget):
                 thumb.set_data(points)
             else:
                 thumb.clear()
+
+        # Highlight chips: best dataset per metric.
+        for metric, chip in self._highlight_chips.items():
+            m_summary = snap.metrics.get(metric)
+            if m_summary is None or not m_summary.best_dataset_name:
+                chip.set_data("-", None)
+            else:
+                chip.set_data(
+                    m_summary.best_dataset_name,
+                    m_summary.best_dataset_value,
+                )
 
         # Metric overview cards
         self._refresh_overview_cards(snap)
@@ -406,17 +601,41 @@ class OverviewDashboardWidget(QWidget):
     # ----------------------------------------------------------------
     # Metric selector
     # ----------------------------------------------------------------
-    def _on_metric_changed(self, metric: str) -> None:
-        if not metric or metric == self._current_metric:
-            return
-        self._current_metric = metric
-        if self._snapshot is None:
+    def _on_dataset_metric_changed(self, metric: str) -> None:
+        if not metric or self._snapshot is None:
             return
         summary = self._snapshot.metrics.get(metric)
         if summary is None:
-            self._bar_panel.clear()
+            self._dataset_bar_panel.clear()
             return
-        self._bar_panel.set_data(metric, summary.series)
+        self._current_metric = metric
+        self._dataset_bar_panel.set_data(
+            metric,
+            list(summary.dataset_groups.values()),
+            label_attr="name",
+            mean_attr="combined_mean",
+            variance_attr="combined_variance",
+        )
+        # Keep the sample-level panel in sync with the same metric.
+        self._sample_bar_panel.set_data(metric, summary.series)
+
+    def _on_sample_metric_changed(self, metric: str) -> None:
+        if not metric or self._snapshot is None:
+            return
+        summary = self._snapshot.metrics.get(metric)
+        if summary is None:
+            self._sample_bar_panel.clear()
+            return
+        self._current_metric = metric
+        self._sample_bar_panel.set_data(metric, summary.series)
+        # Keep the dataset-level panel in sync with the same metric.
+        self._dataset_bar_panel.set_data(
+            metric,
+            list(summary.dataset_groups.values()),
+            label_attr="name",
+            mean_attr="combined_mean",
+            variance_attr="combined_variance",
+        )
 
     # ----------------------------------------------------------------
     # Theme / styling
@@ -446,6 +665,10 @@ class OverviewDashboardWidget(QWidget):
             ("overviewSideSubtitle", 11, 500),
             ("curvesTitle", 14, 700),
             ("curvesSubtitle", 11, 500),
+            ("sampleBarTitle", 14, 700),
+            ("sampleBarSubtitle", 11, 500),
+            ("highlightsTitle", 14, 700),
+            ("highlightsSubtitle", 11, 500),
         ):
             lbl = self.findChild(QLabel, obj_name)
             if lbl is None:

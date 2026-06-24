@@ -1,4 +1,4 @@
-# coding: utf-8
+﻿# coding: utf-8
 """Notebook workspace - scoped container for all analysis modules."""
 from __future__ import annotations
 
@@ -406,6 +406,22 @@ class NotebookWorkspace(QWidget):
                 results_path=str(structure.results_root) if structure.results_root else None,
                 train_log_path=str(structure.train_log_dir) if structure.train_log_dir else None,
             )
+
+            # Pre-compute train_log statistics as soon as the dataset
+            # is registered. The overview dashboard reads this cache
+            # instead of re-parsing every CSV on each refresh.
+            if structure.train_log_dir:
+                try:
+                    from front.model.train_log_stats import (
+                        ensure_dataset_stats as _ensure_dataset_stats,
+                    )
+                    _ensure_dataset_stats(structure.train_log_dir)
+                except Exception as _exc:
+                    logger.warning(
+                        "Failed to pre-compute train_log stats at upload: %s",
+                        _exc,
+                    )
+
             self._refresh_datasets()
             self._datasets_view.refresh()
             for i in range(self._dataset_combo.count()):

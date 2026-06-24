@@ -17,6 +17,17 @@ Privacy contract:
 """
 from __future__ import annotations
 
+import sys as _sys
+from pathlib import Path as _Path
+# Make ``utils`` and ``front.model.train_log_stats`` resolvable when
+# this module is imported via ``front.model.dashboard_data`` (mirrors
+# the front-path setup used in train_log_stats.py and
+# overview_dashboard.py).
+_front = _Path(__file__).resolve().parent.parent
+if str(_front) not in _sys.path:
+    _sys.path.insert(0, str(_front))
+del _sys, _Path
+
 import csv
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +36,16 @@ from typing import Dict, List, Optional, Sequence
 from backend.models import DatasetManager, NotebookManager
 from utils.logger import logger
 
+from front.model.train_log_stats import (
+    HIGHER_IS_BETTER as _TL_HIGHER_IS_BETTER,
+    ImageStat as _ImageStat,
+    MetricStat as _MetricStat,
+    compute_dataset_stats as _compute_dataset_stats,
+    ensure_dataset_stats as _ensure_dataset_stats,
+    load_dataset_stats as _load_dataset_stats,
+    read_metric_csv as _read_metric_csv_v2,
+    save_dataset_stats as _save_dataset_stats,
+)
 
 # Same metric set used by the plots module. Order matters - it drives
 # the default order in metric selectors / overview cards.
@@ -63,6 +84,17 @@ class DatasetSeries:
 
 
 @dataclass
+class DatasetGroupSummary:
+    """Per-dataset-name aggregated metrics for a single metric column."""
+
+    name: str
+    combined_mean: float
+    combined_variance: float
+    sample_count: int
+    epochs_total: int
+
+
+@dataclass
 class MetricSummary:
     """Cross-dataset summary for one metric column."""
 
@@ -75,6 +107,62 @@ class MetricSummary:
     worst_sample_id: str
     worst_value: float
     series: List[DatasetSeries] = field(default_factory=list)
+    dataset_groups: Dict[str, DatasetGroupSummary] = field(default_factory=dict)
+
+    # ---- Best / worst aggregated at the dataset-name level ----
+    # Populated by the data service from `dataset_groups`. Surfaced by
+    # KPI and Metric Overview cards so they show the strongest dataset's
+    # pooled mean rather than the mean across every sample in every
+    # dataset.
+    best_dataset_name: str = ""
+    best_dataset_value: float = 0.0
+    worst_dataset_name: str = ""
+    worst_dataset_value: float = 0.0
+
+    @property
+    def best_sample_mean(self) -> Optional[float]:
+        """Mean-across-epochs for the best sample, used by KPI / overview
+        cards so they surface the best dataset's parameter mean instead
+        of the grand mean across all datasets."""
+        if not self.best_sample_id:
+            return None
+        for row in self.series:
+            if row.sample_id == self.best_sample_id:
+                return row.mean
+        return None
+
+    @property
+    def best_sample_dataset(self) -> str:
+        """Name of the dataset that contains ``best_sample_id``. Empty
+        when the best sample cannot be located. The overview UI joins
+        this with the sample id to surface "which dataset's which
+        sample" for the metric's top performer."""
+        if not self.best_sample_id:
+            return ""
+        for row in self.series:
+            if row.sample_id == self.best_sample_id:
+                return row.name
+        return ""
+
+    @property
+    def worst_sample_dataset(self) -> str:
+        """Same as :pyattr:`best_sample_dataset` but for
+        ``worst_sample_id``."""
+        if not self.worst_sample_id:
+            return ""
+        for row in self.series:
+            if row.sample_id == self.worst_sample_id:
+                return row.name
+        return ""
+
+    @property
+    def best_dataset_mean(self) -> Optional[float]:
+        """Combined-mean across all data within the best-performing
+        dataset (grouped by dataset.name). Mirrors what the top
+        per-dataset bar chart shows for the strongest bar."""
+        if not self.best_dataset_name:
+            return None
+        return self.best_dataset_value
 
     def as_display(self) -> Dict[str, object]:
         return {
@@ -87,6 +175,10 @@ class MetricSummary:
             "worst_sample_id": self.worst_sample_id,
             "worst_value": self.worst_value,
             "series": [s.as_display() for s in self.series],
+            "best_dataset_name": self.best_dataset_name,
+            "best_dataset_value": self.best_dataset_value,
+            "worst_dataset_name": self.worst_dataset_name,
+            "worst_dataset_value": self.worst_dataset_value,
         }
 
 
@@ -266,6 +358,23 @@ class DashboardDataService:
         datasets_all = self._ds_mgr.list_all_active()
         datasets = [d for d in datasets_all if ds_filter_fn(d)]
         notebooks = self._nb_mgr.list_active()
+
+        # Pre-compute per-dataset train_log stats caches so the rest of
+        # the pipeline can read the precomputed _stats.json. The upload
+        # flow in notebook_workspace calls ``ensure_dataset_stats``
+        # eagerly; this block is the lazy fallback for datasets whose
+        # cache hasn't been written yet (e.g. legacy uploads).
+        for _ds in datasets:
+            if not _ds.train_log_path:
+                continue
+            try:
+                _ensure_dataset_stats(Path(_ds.train_log_path))
+            except Exception as _exc:
+                logger.warning(
+                    "Failed to ensure train_log stats for %s: %s",
+                    _ds.train_log_path, _exc,
+                )
+
         sig = (
             self.CACHE_VERSION,
             notebook_id,
@@ -313,8 +422,24 @@ class DashboardDataService:
     def _aggregate_metric(
         self, metric: str, datasets: Sequence
     ) -> Optional[MetricSummary]:
+        """Build a MetricSummary for one metric column.
+
+        Behaviour matches the ``train_log_stats`` module:
+
+        * The CSV reader dedupes on ``(sample, seed, epoch)``.
+        * Per-sample "value" used downstream is the max of that
+          sample's deduped rows (regardless of seed).
+        * ``grand_mean`` / ``grand_variance`` are taken across the
+          per-sample maxes, so the metric's representative value is
+          the mean of each image's best run.
+        """
         series: List[DatasetSeries] = []
         per_sample: Dict[str, DatasetSeries] = {}
+        # Per-dataset: collect one entry per sample, equal to that
+        # sample's best (max) value. ``_build_dataset_groups`` then
+        # aggregates across samples within a dataset, so the dataset's
+        # combined_mean = mean of per-image best values.
+        per_dataset_image_best: Dict[str, Dict[str, float]] = {}
         for ds in datasets:
             log_dir = ds.train_log_path
             if not log_dir:
@@ -322,18 +447,27 @@ class DashboardDataService:
             csv_path = Path(log_dir) / f"{metric}.csv"
             if not csv_path.exists():
                 continue
-            per_sample_id = _read_metric_csv(csv_path)
-            for sample_id, values in per_sample_id.items():
-                if not values:
+            per_sample_id, _raw, _dedup = _read_metric_csv_v2(csv_path)
+            for sample_id, entries in per_sample_id.items():
+                if not entries:
                     continue
-                final_v = values[-1]
+                values = [v for _, _, v in entries]
+                # For higher-better metrics the representative value
+                # is the max across (epoch, seed); for loss (and other
+                # lower-better metrics) it is the value at the LAST
+                # recorded epoch -- see compute_image_stat in
+                # train_log_stats.py for the full contract.
+                if metric.lower() in _TL_HIGHER_IS_BETTER:
+                    best_v = max(values)
+                else:
+                    best_v = values[-1]
                 mean_v = sum(values) / len(values)
                 var_v = _variance(values)
                 series_row = DatasetSeries(
                     name=ds.name,
                     sample_id=sample_id,
                     notebook_id=ds.notebook_id,
-                    final_value=final_v,
+                    final_value=best_v,
                     mean=mean_v,
                     variance=var_v,
                     min_value=min(values),
@@ -342,11 +476,15 @@ class DashboardDataService:
                 )
                 # Last writer wins; mirrors a user re-uploading the same sample.
                 per_sample[sample_id] = series_row
+                per_dataset_image_best.setdefault(ds.name, {})[sample_id] = best_v
 
         if not per_sample:
             return None
 
         series = list(per_sample.values())
+        # Use per-sample best_value (max across the deduped rows) as
+        # the metric's representative unit. Mean and variance are then
+        # taken across those per-image bests.
         finals = [s.final_value for s in series]
         grand_mean = sum(finals) / len(finals)
         grand_var = _variance(finals)
@@ -358,7 +496,7 @@ class DashboardDataService:
             best = min(series, key=lambda s: s.final_value)
             worst = max(series, key=lambda s: s.final_value)
 
-        return MetricSummary(
+        summary = MetricSummary(
             metric=metric,
             dataset_count=len(series),
             grand_mean=grand_mean,
@@ -369,3 +507,69 @@ class DashboardDataService:
             worst_value=worst.final_value,
             series=series,
         )
+        # Build dataset-level aggregation and pick the strongest / weakest
+        # dataset by combined_mean. Populate the summary so KPI and
+        # Metric Overview cards can surface the best *dataset* rather
+        # than the best single sample.
+        # For dataset aggregation we feed each image's *best* value
+        # (not every per-epoch value), matching the contract used by
+        # ``train_log_stats``: combined_mean = mean of per-image best
+        # values, combined_variance = variance of those best values.
+        per_dataset_values = {
+            name: list(image_bests.values())
+            for name, image_bests in per_dataset_image_best.items()
+        }
+        per_dataset_samples = {
+            name: len(image_bests)
+            for name, image_bests in per_dataset_image_best.items()
+        }
+        groups = _build_dataset_groups(per_dataset_values, per_dataset_samples)
+        bd_name, bd_val, wd_name, wd_val = _pick_best_worst_dataset(
+            groups, _is_higher_better(metric)
+        )
+        summary.dataset_groups = groups
+        summary.best_dataset_name = bd_name
+        summary.best_dataset_value = bd_val
+        summary.worst_dataset_name = wd_name
+        summary.worst_dataset_value = wd_val
+        return summary
+
+
+def _pick_best_worst_dataset(
+    groups: Dict[str, DatasetGroupSummary],
+    higher_better: bool,
+) -> tuple[str, float, str, float]:
+    """Pick best/worst dataset by combined_mean across dataset groups."""
+    if not groups:
+        return "", 0.0, "", 0.0
+    items = list(groups.values())
+    if higher_better:
+        best = max(items, key=lambda g: g.combined_mean)
+        worst = min(items, key=lambda g: g.combined_mean)
+    else:
+        best = min(items, key=lambda g: g.combined_mean)
+        worst = max(items, key=lambda g: g.combined_mean)
+    return best.name, best.combined_mean, worst.name, worst.combined_mean
+
+
+def _build_dataset_groups(
+    per_dataset_values: Dict[str, List[float]],
+    per_dataset_samples: Dict[str, int],
+) -> Dict[str, DatasetGroupSummary]:
+    """Pool all per-sample per-epoch values by dataset.name and emit
+    one DatasetGroupSummary per dataset name."""
+    out: Dict[str, DatasetGroupSummary] = {}
+    for name, values in per_dataset_values.items():
+        if not values:
+            continue
+        n = len(values)
+        mean_v = sum(values) / n
+        var_v = _variance(values)
+        out[name] = DatasetGroupSummary(
+            name=name,
+            combined_mean=mean_v,
+            combined_variance=var_v,
+            sample_count=per_dataset_samples.get(name, 0),
+            epochs_total=n,
+        )
+    return out
