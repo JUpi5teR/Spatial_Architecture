@@ -424,22 +424,27 @@ class ImagePanel(QWidget):
 
 # ---- Helper: load scatter data from spatial datasets ----
 
-# Color palette matching spatial_viewer CLUSTER_COLORS
+# Qualitative palette with strong light/dark contrast: warm layers
+# use the light (Flat-UI) variants, cool layers use the dark variants
+# so adjacent cool layers (green / blue / purple) are clearly distinct.
 _CLUSTER_COLORS = {
-    "Layer1": (93, 173, 226),   # #5DADE2
-    "Layer2": (46, 134, 193),   # #2E86C1
-    "Layer3": (40, 116, 166),   # #2874A6
-    "Layer4": (31, 97, 141),    # #1F618D
-    "Layer5": (26, 82, 118),    # #1A5276
-    "Layer6": (21, 67, 96),     # #154360
-    "WM":     (93, 109, 126),   # #5D6D7E
-    "Unlabeled": (0, 0, 0),     # #000000
+    "Layer1":    (231,  76,  60),   # #E74C3C  light red
+    "Layer2":    (230, 126,  34),   # #E67E22  light orange
+    "Layer3":    (241, 196,  15),   # #F1C40F  light yellow
+    "Layer4":    ( 39, 174,  96),   # #27AE60  DARK green
+    "Layer5":    ( 41, 128, 185),   # #2980B9  DARK blue
+    "Layer6":    (142,  68, 173),   # #8E44AD  DARK purple
+    "WM":        (127, 140, 141),   # #7F8C8D  medium gray
+    "Unlabeled": ( 44,  62,  80),   # #2C3E50  dark slate
 }
 _FALLBACK_RGB = [
-    (0, 139, 139), (0, 128, 128), (14, 102, 85),
-    (30, 144, 255), (123, 104, 238), (106, 90, 205),
-    (72, 61, 139), (75, 0, 130), (142, 68, 173),
-    (26, 188, 156), (17, 122, 101), (25, 25, 112),
+    # Light warm
+    (231,  76,  60), (230, 126,  34), (241, 196,  15),
+    # Dark cool
+    ( 39, 174,  96), ( 41, 128, 185), (142,  68, 173),
+    # Mixed extras
+    (192,  57,  43), (211,  84,   0), (243, 156,  18),
+    ( 22, 160, 133), ( 31,  97, 141), (108,  52, 131),
 ]
 
 def _normalize_label(label):
