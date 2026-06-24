@@ -106,9 +106,9 @@ class FloatPanel(QFrame):
         self._reset_btn = QPushButton("Reset"); self._reset_btn.setCheckable(False); lay.addWidget(self._reset_btn)
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setStyleSheet("border:none;border-top:1px solid #e0e0e0"); lay.addWidget(sep)
         lay.addWidget(QLabel("GT Opacity"))
-        self._gt_slider = QSlider(Qt.Orientation.Horizontal); self._gt_slider.setRange(10, 100); self._gt_slider.setValue(100); lay.addWidget(self._gt_slider)
+        self._gt_slider = QSlider(Qt.Orientation.Horizontal); self._gt_slider.setRange(10, 100); self._gt_slider.setValue(60); lay.addWidget(self._gt_slider)
         lay.addWidget(QLabel("Result Opacity"))
-        self._pred_slider = QSlider(Qt.Orientation.Horizontal); self._pred_slider.setRange(10, 100); self._pred_slider.setValue(100); lay.addWidget(self._pred_slider)
+        self._pred_slider = QSlider(Qt.Orientation.Horizontal); self._pred_slider.setRange(10, 100); self._pred_slider.setValue(75); lay.addWidget(self._pred_slider)
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine); sep2.setStyleSheet("border:none;border-top:1px solid #e0e0e0"); lay.addWidget(sep2)
         stats = QFrame(); stats.setObjectName("stats")
         s_lay = QVBoxLayout(stats); s_lay.setContentsMargins(8, 6, 8, 6); s_lay.setSpacing(2)
@@ -150,8 +150,8 @@ class Overlay3DViewWidget(QWidget):
         self._overlay_on = False
         self._showing_front = True
         self._rot_z_quarter = 0
-        self._gt_opacity = 1.0
-        self._pred_opacity = 1.0
+        self._gt_opacity = 0.6
+        self._pred_opacity = 0.75
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._plotter = QtInteractor(self)
@@ -295,7 +295,7 @@ class Overlay3DViewWidget(QWidget):
             arr = np.array(pts, dtype=np.float64)
             color = _hex_to_rgb(get_layer_color(layer))
             p.add_mesh(pv.PolyData(arr), color=color, point_size=_POINT_SIZE_NORMAL,
-                       render_points_as_spheres=True, opacity=1.0, lighting=False,
+                       render_points_as_spheres=True, opacity=0.6, lighting=False,
                        name=f"{prefix}_{layer}")
 
     def _add_scatter_result(self, ds, z, has_results):
@@ -315,7 +315,7 @@ class Overlay3DViewWidget(QWidget):
             arr = np.array(pts, dtype=np.float64)
             color = _hex_to_rgb(get_domain_color(domain))
             p.add_mesh(pv.PolyData(arr), color=color, point_size=_POINT_SIZE_NORMAL,
-                       render_points_as_spheres=True, opacity=1.0, lighting=False,
+                       render_points_as_spheres=True, opacity=0.75, lighting=False,
                        name=f"res_domain_{domain}")
 
     def _update_stats(self, ds):
@@ -348,10 +348,10 @@ class Overlay3DViewWidget(QWidget):
         self._overlay_on = False
         self._showing_front = True
         self._rot_z_quarter = 0
-        self._gt_opacity = 1.0
-        self._pred_opacity = 1.0
-        self._float._gt_slider.setValue(100)
-        self._float._pred_slider.setValue(100)
+        self._gt_opacity = 0.6
+        self._pred_opacity = 0.75
+        self._float._gt_slider.setValue(60)
+        self._float._pred_slider.setValue(75)
         self._float.set_overlay_mode(False)
         self._plotter.camera_position = [(0, -self._ph*0.55, self._pw*0.85), (0,0,0), (0,0,1)]
         self._update_visibility()
