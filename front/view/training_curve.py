@@ -1,4 +1,4 @@
-from typing import Optional
+﻿from typing import Optional
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -81,7 +81,7 @@ class TrainingCurveWidget(QWidget):
             ax.set_ylabel("Value")
             ax.set_title("Training Progress")
             ax.legend()
-            ax.grid(True, alpha=0.3)
+            ax.set_ylim(top=1)\n            ax.grid(True, alpha=0.3)
 
             self._figure.tight_layout()
             self._canvas.draw()

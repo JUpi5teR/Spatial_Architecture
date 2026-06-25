@@ -43,6 +43,7 @@ from front.model.train_log_stats import (
     compute_dataset_stats as _compute_dataset_stats,
     ensure_dataset_stats as _ensure_dataset_stats,
     load_dataset_stats as _load_dataset_stats,
+    aggregate_epoch_means as _aggregate_epoch_means,
     compute_per_sample_best as _compute_per_sample_best,
     read_metric_csv as _read_metric_csv_v2,
     save_dataset_stats as _save_dataset_stats,
@@ -302,23 +303,32 @@ def _read_metric_csv(csv_path: Path) -> Dict[str, List[float]]:
 
 
 def _downsample_curve(
-    per_sample: Dict[str, List[float]],
+    per_sample_rows: Dict[str, List[tuple]],
     max_points: int = 80,
 ) -> List[CurvePoint]:
-    """Average each epoch across samples and downsample to <= max_points.
+    """Build a downsampled aggregate curve for the overview thumbnail.
 
-    We average across samples rather than emitting per-sample curves so
-    the thumbnail only exposes aggregate trends, not individual data
-    points (privacy: no per-sample trajectories are surfaced).
+    Uses ``aggregate_epoch_means`` to collapse seeds into per-epoch
+    means, then averages across samples, and finally downsamples to
+    at most ``max_points``. Only aggregate trends are exposed (no
+    per-sample trajectories) for privacy.
     """
-    if not per_sample:
+    if not per_sample_rows:
         return []
-    max_len = max((len(v) for v in per_sample.values()), default=0)
-    if max_len == 0:
+    epoch_means = _aggregate_epoch_means(per_sample_rows)
+    # Collect all per-epoch per-sample means into epoch-aligned lists
+    all_epochs = sorted(set(
+        e for sample_data in epoch_means.values() for e in sample_data
+    ))
+    if not all_epochs:
         return []
     means: List[float] = []
-    for i in range(max_len):
-        vals = [v[i] for v in per_sample.values() if i < len(v)]
+    for epoch in all_epochs:
+        vals = [
+            sample_data[epoch]
+            for sample_data in epoch_means.values()
+            if epoch in sample_data
+        ]
         if vals:
             means.append(sum(vals) / len(vals))
     if len(means) <= max_points:
@@ -406,7 +416,7 @@ class DashboardDataService:
                     continue
                 csv_path = Path(log_dir) / f"{metric}.csv"
                 if csv_path.exists():
-                    curves[metric] = _downsample_curve(_read_metric_csv(csv_path))
+                    curves[metric] = _downsample_curve(per_sample_rows=_read_metric_csv_v2(csv_path)[0])
                     break
 
         snapshot = DashboardSnapshot(

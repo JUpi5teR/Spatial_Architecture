@@ -163,6 +163,30 @@ def _variance(values: Sequence[float]) -> float:
     return sum((v - mean) ** 2 for v in values) / n
 
 
+def aggregate_epoch_means(
+    per_sample_rows: Dict[str, List[Tuple[int, int, float]]],
+) -> Dict[str, Dict[int, float]]:
+    """Aggregate per-sample per-epoch values by computing the mean across seeds.
+
+    Each CSV row is ``(epoch, seed, value)``. When the same sample was
+    trained with multiple seeds, this collapses them into a single
+    mean per (sample, epoch). The result is ready for plotting
+    training curves.
+
+    Returns ``{sample_id: {epoch: mean_value}}``.
+    """
+    result: Dict[str, Dict[int, float]] = {}
+    for sample_id, entries in per_sample_rows.items():
+        epoch_groups: Dict[int, List[float]] = {}
+        for epoch, _seed, value in entries:
+            epoch_groups.setdefault(epoch, []).append(value)
+        result[sample_id] = {
+            epoch: sum(vals) / len(vals)
+            for epoch, vals in epoch_groups.items()
+        }
+    return result
+
+
 def compute_per_sample_best(
     per_sample_rows: Dict[str, List[Tuple[int, int, float]]],
     metric: str = "",
