@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from model.image_manager import ImagePair, load_image
+from view.layer_hover_card import LayerHoverCard
 from utils.logger import logger
 
 
@@ -62,6 +63,7 @@ class ZoomableImageLabel(QLabel):
 
     zoom_changed = Signal(float)
     pan_changed = Signal(QPoint)
+    scatter_clicked = Signal(str, str)  # label, source("GT"|"Pred")
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -84,6 +86,7 @@ class ZoomableImageLabel(QLabel):
         # Track press position to distinguish click from drag
         self._press_pos: Optional[QPoint] = None
         self._press_active: bool = False
+        self._source: str = ""  # "GT" or "Pred"
 
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(
@@ -338,6 +341,7 @@ class ZoomableImageLabel(QLabel):
         hit = self._find_scatter_at(pos)
         if hit is None:
             self.clear_highlight()
+            self.scatter_clicked.emit("", "")
             return
 
         labels = self._scatter_labels
@@ -346,6 +350,7 @@ class ZoomableImageLabel(QLabel):
             self._highlight_indices = {
                 i for i, lbl in enumerate(labels) if lbl == target
             }
+            self.scatter_clicked.emit(str(target), self._source)
         else:
             target_color = self._scatter_colors[hit]
             self._highlight_indices = {
@@ -353,6 +358,7 @@ class ZoomableImageLabel(QLabel):
                 for i, c in enumerate(self._scatter_colors)
                 if tuple(c) == tuple(target_color)
             }
+            self.scatter_clicked.emit("", self._source)
         self._update_display()
 
 
@@ -360,9 +366,10 @@ class ZoomableImageLabel(QLabel):
 class ImagePanel(QWidget):
     """Single image panel with title, image, and optional label."""
 
-    def __init__(self, title: str, parent: QWidget | None = None):
+    def __init__(self, title: str, source_tag: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self._dark: bool = False
+        self._source_tag = source_tag  # "GT" or "Pred"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -412,6 +419,7 @@ class ImagePanel(QWidget):
         self.image_label.set_scatter_data(
             scatter_x, scatter_y, scatter_colors, labels=scatter_labels
         )
+        self.image_label._source = self._source_tag
         self._title.setText(f"{self._title.text().split(':')[0]}: {filename}")
         self._label.setText(label)
 
@@ -480,6 +488,7 @@ class ComparisonViewWidget(QWidget):
     """Side-by-side GT vs Prediction image comparison with scatter overlay."""
 
     section_changed = Signal(str)
+    scatter_clicked = Signal(str, str)  # label, source("GT"|"Pred")
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -543,7 +552,7 @@ class ComparisonViewWidget(QWidget):
         gt_frame_layout = QVBoxLayout(self._gt_frame)
         gt_frame_layout.setContentsMargins(2, 2, 2, 2)
 
-        self._gt_panel = ImagePanel("Ground Truth")
+        self._gt_panel = ImagePanel("Ground Truth", source_tag="GT")
         gt_frame_layout.addWidget(self._gt_panel)
 
         self._pred_frame = QFrame()
@@ -552,8 +561,18 @@ class ComparisonViewWidget(QWidget):
         pred_frame_layout = QVBoxLayout(self._pred_frame)
         pred_frame_layout.setContentsMargins(2, 2, 2, 2)
 
-        self._pred_panel = ImagePanel("Results")
+        self._pred_panel = ImagePanel("Results", source_tag="Pred")
         pred_frame_layout.addWidget(self._pred_panel)
+
+        # Hover cards: one per panel, overlaid on top
+        self._gt_hover = LayerHoverCard(self._gt_frame)
+        self._gt_hover.setVisible(False)
+        self._pred_hover = LayerHoverCard(self._pred_frame)
+        self._pred_hover.setVisible(False)
+
+        # Forward scatter_clicked to hover cards + external signal
+        self._gt_panel.image_label.scatter_clicked.connect(self._on_gt_scatter_clicked)
+        self._pred_panel.image_label.scatter_clicked.connect(self._on_pred_scatter_clicked)
 
         panels_layout.addWidget(self._gt_frame, 1)
         panels_layout.addWidget(self._pred_frame, 1)
@@ -585,7 +604,11 @@ class ComparisonViewWidget(QWidget):
         self._gt_frame.setStyleSheet(f"QFrame {{ border: 2px solid {border_color}; border-radius: 4px; }}")
         self._pred_frame.setStyleSheet(f"QFrame {{ border: 2px solid {border_color}; border-radius: 4px; }}")
         self._gt_panel.update_theme(dark)
+        if self._gt_hover:
+            self._gt_hover.set_dark(dark)
         self._pred_panel.update_theme(dark)
+        if self._pred_hover:
+            self._pred_hover.set_dark(dark)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -609,9 +632,28 @@ class ComparisonViewWidget(QWidget):
             self._sync_btn.setText("Lock Sync")
 
     def _on_reset_highlight(self) -> None:
-        # Clear click-highlight on both panels (GT and Results stay independent).
+        # Clear click-highlight on both panels + hide hover cards.
         self._gt_panel.image_label.clear_highlight()
         self._pred_panel.image_label.clear_highlight()
+        if self._gt_hover:
+            self._gt_hover._hide()
+        if self._pred_hover:
+            self._pred_hover._hide()
+
+    def _on_gt_scatter_clicked(self, label, source):
+        if label:
+            self._gt_hover.show_for_label(label, source)
+        else:
+            self._gt_hover._hide()
+        # Also forward to external listeners
+        self.scatter_clicked.emit(label, source)
+
+    def _on_pred_scatter_clicked(self, label, source):
+        if label:
+            self._pred_hover.show_for_label(label, source)
+        else:
+            self._pred_hover._hide()
+        self.scatter_clicked.emit(label, source)
 
     def _on_gt_zoom(self, factor: float) -> None:
         if self._sync_locked and not self._syncing:

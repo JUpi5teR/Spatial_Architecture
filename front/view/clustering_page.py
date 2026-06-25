@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from model.image_manager import ImagePair
 from view.comparison_view import ComparisonViewWidget
+from view.layer_biology_panel import LayerBiologyPanel
 
 from utils.logger import logger
 try:
@@ -259,6 +260,11 @@ class ClusteringPage(QWidget):
         self._data_root = ""
         self._section_ids = []
         self._dark = False
+
+        # Layer biology reference panel (visible only in side-by-side mode)
+        self._bio_panel = LayerBiologyPanel()
+        self._bio_panel.hide()
+
         self._build_ui()
 
     def set_dark(self, dark: bool) -> None:
@@ -275,6 +281,9 @@ class ClusteringPage(QWidget):
                 pass
         if self._hover_panel:
             self._hover_panel.set_dark(dark)
+        if self._bio_panel:
+            self._bio_panel.set_dark(dark)
+
 
     def _build_ui(self):
         ly = QVBoxLayout(self)
@@ -360,6 +369,9 @@ class ClusteringPage(QWidget):
         content.addWidget(self._content_stack)
         ly.addLayout(content)
 
+        # Bottom: cortical layer reference table (side-by-side only)
+        ly.addWidget(self._bio_panel)
+
     # ----------------------------------------------------------------
     # Mode
     # ----------------------------------------------------------------
@@ -370,6 +382,7 @@ class ClusteringPage(QWidget):
             self._btn_3d.setChecked(mode == "spatial")
         if mode == "sbs":
             self._content_stack.setCurrentIndex(0)
+            self._bio_panel.show()
             # Show current section in side-by-side
             if self._section_ids and self._current_index < len(self._section_ids):
                 sid = self._section_ids[self._current_index]
@@ -377,6 +390,7 @@ class ClusteringPage(QWidget):
                 self._comparison_view.show_overlay_pair(sid)
         else:
             self._content_stack.setCurrentIndex(1)
+            self._bio_panel.hide()
             if self._spatial_viewer and self._data_root and self._section_ids:
                 idx = min(self._current_index, len(self._section_ids) - 1)
                 if idx >= 0:
@@ -451,6 +465,7 @@ class ClusteringPage(QWidget):
             self._hover_panel.set_current_section(sid)
         # Load overlay for the new section
         self._comparison_view.show_overlay_pair(sid)
+
 
     def _load_spatial(self, sid):
         if not HAS_SPATIAL or not self._spatial_viewer:
