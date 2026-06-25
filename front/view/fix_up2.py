@@ -1,4 +1,4 @@
-﻿with open("upload_view.py", "r", encoding="utf-8-sig") as f:
+with open("upload_view.py", "r", encoding="utf-8-sig") as f:
     lines = f.readlines()
 
 # Fix the file: remove broken inline set_dark, restore __init__, add proper set_dark

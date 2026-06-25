@@ -1,14 +1,13 @@
 ﻿# coding: utf-8
-"""Plots 页面 —— 训练过程曲线 (Loss, ARI, NMI, HS, CS)。
+"""Plots 椤甸潰 鈥斺€?璁粌杩囩▼鏇茬嚎 (Loss, ARI, NMI, HS, CS)銆?
 
-读取 train_log 中每个指标的 .csv，按 epoch 绘制折线图。
+璇诲彇 train_log 涓瘡涓寚鏍囩殑 .csv锛屾寜 epoch 缁樺埗鎶樼嚎鍥俱€?
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
 
-import pandas as pd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
@@ -19,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from model.data_path import DataPathManager, TRAIN_LOG_METRICS
+from front.model.train_log_stats import aggregate_epoch_means, read_metric_csv
 from utils.logger import logger
 
 
@@ -79,7 +79,7 @@ class PlotsViewWidget(QWidget):
         # All 5 metrics shown together per sample
         # Metric combo removed - all metrics displayed in grid
 
-        self._smooth_check = QCheckBox("平滑 (窗口=5)")
+        self._smooth_check = QCheckBox("骞虫粦 (绐楀彛=5)")
         self._smooth_check.toggled.connect(self._on_smooth_toggled)
         ctrl_row.addWidget(self._smooth_check)
 
@@ -98,13 +98,13 @@ class PlotsViewWidget(QWidget):
 
     def load_data(self) -> None:
         if not self._mgr.has_valid_data():
-            self._draw_placeholder("\u26A0  请先上传数据文件夹 (Upload Data)")
+            self._draw_placeholder("\u26A0  璇峰厛涓婁紶鏁版嵁鏂囦欢澶?(Upload Data)")
             self._loaded = False
             return
 
         structure = self._mgr.structure()
         if structure is None or not structure.has_train_log or not structure.train_log_metrics:
-            self._draw_placeholder("\u2139  train_log 未找到，暂无训练曲线")
+            self._draw_placeholder("\u2139  train_log 鏈壘鍒帮紝鏆傛棤璁粌鏇茬嚎")
             self._loaded = False
             return
 
@@ -130,37 +130,24 @@ class PlotsViewWidget(QWidget):
             return
 
         # Load all metrics data, pivoted to wide (epoch x sample)
-        all_data = {}
-        all_samples = set()
+        # Load all metrics using the shared CSV reader and epoch-mean
+        # aggregator. Each sample gets one mean per epoch (across seeds).
+        all_data: dict = {}
+        all_samples: set = set()
         for metric in metrics:
             csv_path = structure.train_log_dir / f"{metric}.csv"
             if not csv_path.is_file():
                 continue
             try:
-                df = pd.read_csv(csv_path)
+                per_sample_rows, _raw, _dedup = read_metric_csv(csv_path)
             except Exception as exc:
                 logger.error("Failed to read %s: %s", csv_path, exc)
                 continue
-            if df.empty:
+            if not per_sample_rows:
                 continue
-            # Pivot if long format
-            sample_col_key = None
-            for c in df.columns:
-                if c.lower().strip() == "sample":
-                    sample_col_key = c
-                    break
-            if sample_col_key is not None:
-                value_cols = [c for c in df.columns if c.lower().strip() not in ("epoch", "sample")]
-                if not value_cols:
-                    continue
-                value_col = value_cols[0]
-                df = df.pivot_table(index="epoch", columns=sample_col_key, values=value_col, aggfunc="first")
-                df = df.reset_index()
-            # Collect sample names
-            sample_cols = [c for c in df.columns if c.lower().strip() not in ("epoch",)]
-            for sc in sample_cols:
-                all_samples.add(str(sc))
-            all_data[metric] = df
+            epoch_means = aggregate_epoch_means(per_sample_rows)
+            all_data[metric] = epoch_means
+            all_samples.update(epoch_means.keys())
 
         if not all_data:
             self._draw_placeholder("No data to plot")
@@ -181,17 +168,24 @@ class PlotsViewWidget(QWidget):
             ax = self._figure.add_subplot(nrows, ncols, idx + 1)
 
             for metric in metrics:
-                df = all_data.get(metric)
-                if df is None or sample not in df.columns:
+                epoch_means = all_data.get(metric)
+                if epoch_means is None or sample not in epoch_means:
                     continue
-                if "epoch" in df.columns:
-                    x = df["epoch"].values
-                else:
-                    x = range(len(df))
+                sample_data = epoch_means[sample]
+                epochs_sorted = sorted(sample_data.keys())
+                x = epochs_sorted
+                y = [sample_data[e] for e in epochs_sorted]
+                # For loss, clip values to < 1
+                if metric == "loss":
+                    filtered = [(ex, ey) for ex, ey in zip(x, y) if ey < 1]
+                    if filtered:
+                        x, y = zip(*filtered)
+                        x, y = list(x), list(y)
+                    else:
+                        x, y = [], []
 
-                y = pd.to_numeric(df[sample], errors="coerce").values
                 if self._smooth and len(y) > 5:
-                    y = pd.Series(y).rolling(window=5, min_periods=1).mean().values
+                                        y = pd.Series(y).rolling(window=5, min_periods=1).mean().values
 
                 color = metric_colors.get(metric, "#888")
                 ax.plot(x, y, linewidth=1.2, alpha=0.8, color=color, label=metric.upper())
@@ -203,6 +197,10 @@ class PlotsViewWidget(QWidget):
             ax.tick_params(labelsize=6)
             ax.grid(alpha=0.2)
             ax.set_xlim(left=0)
+            # Y-axis capped at 1; loss values >= 1 are clipped
+            ax.set_ylim(top=1)
+            if metric == "loss":
+                ax.set_ylim(bottom=0)
 
         # Add single legend above all subplots
         handles = []
@@ -219,7 +217,7 @@ class PlotsViewWidget(QWidget):
         self._figure.tight_layout(rect=[0, 0, 1, 0.97])
         self._canvas.draw()
 
-def _draw_placeholder(self, message: str) -> None:
+    def _draw_placeholder(self, message: str) -> None:
         self._figure.clear()
         ax = self._figure.add_subplot(111)
         ax.text(0.5, 0.5, message, transform=ax.transAxes, ha="center", va="center",

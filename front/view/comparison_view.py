@@ -1,4 +1,4 @@
-﻿"""Side-by-side image comparison view with zoom, pan, and sync."""
+"""Side-by-side image comparison view with zoom, pan, and sync."""
 from __future__ import annotations
 from typing import List, Optional
 
@@ -78,6 +78,12 @@ class ZoomableImageLabel(QLabel):
         self._scatter_y: Optional[np.ndarray] = None
         self._scatter_colors: Optional[list] = None
         self._scatter_sizes: Optional[np.ndarray] = None
+        self._scatter_labels: Optional[list] = None
+        # Click-highlight state (indices into self._scatter_* arrays)
+        self._highlight_indices: Optional[set] = None
+        # Track press position to distinguish click from drag
+        self._press_pos: Optional[QPoint] = None
+        self._press_active: bool = False
 
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(
@@ -141,12 +147,19 @@ class ZoomableImageLabel(QLabel):
         y: np.ndarray,
         colors: list,
         sizes: np.ndarray | None = None,
+        labels: Optional[list] = None,
     ) -> None:
-        """Store scatter overlay data in image pixel coordinates."""
+        """Store scatter overlay data in image pixel coordinates.
+
+        `labels` is an optional list of per-point label names. When
+        provided, click-to-highlight groups points by label value.
+        """
         self._scatter_x = np.asarray(x, dtype=np.float64)
         self._scatter_y = np.asarray(y, dtype=np.float64)
         self._scatter_colors = colors
         self._scatter_sizes = sizes
+        self._scatter_labels = labels
+        self._highlight_indices = None
         self._update_display()
 
     def clear_scatter(self) -> None:
@@ -155,6 +168,15 @@ class ZoomableImageLabel(QLabel):
         self._scatter_y = None
         self._scatter_colors = None
         self._scatter_sizes = None
+        self._scatter_labels = None
+        self._highlight_indices = None
+        self._update_display()
+
+    def clear_highlight(self) -> None:
+        """Drop click-highlight state and repaint."""
+        if self._highlight_indices is None:
+            return
+        self._highlight_indices = None
         self._update_display()
 
     # ---- Internal ----
@@ -191,18 +213,38 @@ class ZoomableImageLabel(QLabel):
         if self._scatter_x is not None and len(self._scatter_x) > 0:
             scale_x = scaled.width() / ow
             scale_y = scaled.height() / oh
-            base_radius = max(3.0, min(ow, oh) * 0.006)
+            base_radius = max(2.5, min(ow, oh) * 0.0045)
+            has_highlight = (
+                self._highlight_indices is not None
+                and len(self._highlight_indices) > 0
+            )
 
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             for i in range(len(self._scatter_x)):
                 sx = self._scatter_x[i] * scale_x + self._pan_offset.x()
                 sy = self._scatter_y[i] * scale_y + self._pan_offset.y()
                 radius = base_radius * self._zoom_factor
-                radius = max(2.0, min(radius, 14.0))
+                radius = max(1.8, min(radius, 12.0))
                 color = self._scatter_colors[i]
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(QColor(*color)))
-                painter.drawEllipse(QPointF(sx, sy), radius, radius)
+                qc = QColor(*color)
+                if has_highlight:
+                    if i in self._highlight_indices:
+                        # Highlighted: same size, full alpha, dark outline
+                        qc.setAlpha(255)
+                        painter.setPen(QPen(QColor(20, 20, 20, 220), 1.0))
+                        painter.setBrush(QBrush(qc))
+                        painter.drawEllipse(QPointF(sx, sy), radius, radius)
+                    else:
+                        # Dimmed: same size, half-transparent
+                        qc.setAlpha(110)
+                        painter.setPen(Qt.PenStyle.NoPen)
+                        painter.setBrush(QBrush(qc))
+                        painter.drawEllipse(QPointF(sx, sy), radius, radius)
+                else:
+                    qc.setAlpha(220)
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QBrush(qc))
+                    painter.drawEllipse(QPointF(sx, sy), radius, radius)
 
         painter.end()
         self.setPixmap(pm)
@@ -212,7 +254,9 @@ class ZoomableImageLabel(QLabel):
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_active = True
+            self._press_active = True
             self._pan_start = event.position().toPoint()
+            self._press_pos = event.position().toPoint()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseMoveEvent(self, event) -> None:
@@ -225,9 +269,17 @@ class ZoomableImageLabel(QLabel):
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            was_pressed = self._press_active
+            press_pos = self._press_pos
+            release_pos = event.position().toPoint()
             self._drag_active = False
+            self._press_active = False
             self._pan_start = None
+            self._press_pos = None
             self.setCursor(Qt.CursorShape.ArrowCursor)
+            if was_pressed and press_pos is not None:
+                if (release_pos - press_pos).manhattanLength() < 4:
+                    self._handle_click(release_pos)
 
     def mouseDoubleClickEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -237,6 +289,71 @@ class ZoomableImageLabel(QLabel):
         delta = event.angleDelta().y()
         factor = 1.15 if delta > 0 else 1.0 / 1.15
         self._apply_zoom(self._zoom_factor * factor)
+
+    # ---- Click highlight ----
+
+    def _find_scatter_at(self, pos):
+        # Return index of the nearest scatter point to pos within tolerance.
+        if (
+            self._scatter_x is None
+            or self._scatter_y is None
+            or len(self._scatter_x) == 0
+        ):
+            return None
+        pm = self.pixmap()
+        if pm is None or pm.isNull():
+            return None
+        if self._original_pixmap is None:
+            return None
+        ow = self._original_pixmap.width()
+        oh = self._original_pixmap.height()
+        if ow == 0 or oh == 0:
+            return None
+
+        label_w = self.width()
+        label_h = self.height()
+        pm_w = pm.width()
+        pm_h = pm.height()
+        offset_x = (label_w - pm_w) / 2.0
+        offset_y = (label_h - pm_h) / 2.0
+        cx_pm = pos.x() - offset_x
+        cy_pm = pos.y() - offset_y
+        if cx_pm < 0 or cy_pm < 0 or cx_pm >= pm_w or cy_pm >= pm_h:
+            return None
+
+        inv_z = 1.0 / self._zoom_factor if self._zoom_factor else 0.0
+        sx_target = (cx_pm - self._pan_offset.x()) * inv_z
+        sy_target = (cy_pm - self._pan_offset.y()) * inv_z
+
+        dx = self._scatter_x - sx_target
+        dy = self._scatter_y - sy_target
+        dist = np.hypot(dx, dy)
+        nearest = int(np.argmin(dist))
+        if dist[nearest] <= 10.0:
+            return nearest
+        return None
+
+    def _handle_click(self, pos):
+        # Toggle highlight for the label group containing pos. Empty = clear.
+        hit = self._find_scatter_at(pos)
+        if hit is None:
+            self.clear_highlight()
+            return
+
+        labels = self._scatter_labels
+        if labels is not None and hit < len(labels):
+            target = labels[hit]
+            self._highlight_indices = {
+                i for i, lbl in enumerate(labels) if lbl == target
+            }
+        else:
+            target_color = self._scatter_colors[hit]
+            self._highlight_indices = {
+                i
+                for i, c in enumerate(self._scatter_colors)
+                if tuple(c) == tuple(target_color)
+            }
+        self._update_display()
 
 
 
@@ -288,37 +405,46 @@ class ImagePanel(QWidget):
         scatter_colors: list,
         filename: str,
         label: str = "",
+        scatter_labels: list | None = None,
     ) -> None:
         """Show image with scatter points overlaid."""
         self.image_label.set_image(image)
-        self.image_label.set_scatter_data(scatter_x, scatter_y, scatter_colors)
+        self.image_label.set_scatter_data(
+            scatter_x, scatter_y, scatter_colors, labels=scatter_labels
+        )
         self._title.setText(f"{self._title.text().split(':')[0]}: {filename}")
         self._label.setText(label)
 
     def clear(self) -> None:
         self.image_label.clear_image()
+        self.image_label.clear_highlight()
         self._label.setText("")
 
 
 
 # ---- Helper: load scatter data from spatial datasets ----
 
-# Color palette matching spatial_viewer CLUSTER_COLORS
+# Qualitative palette derived from ColorBrewer Set1 with the hue
+# order rotated so every adjacent Layer1..Layer6 sits at least
+# ~140 deg apart on the colour wheel. Adjacent layers no longer
+# fall in the same warm/cool family, which previously made Layer3
+# (light yellow) and Layer4 (dark green) hard to distinguish.
 _CLUSTER_COLORS = {
-    "Layer1": (93, 173, 226),   # #5DADE2
-    "Layer2": (46, 134, 193),   # #2E86C1
-    "Layer3": (40, 116, 166),   # #2874A6
-    "Layer4": (31, 97, 141),    # #1F618D
-    "Layer5": (26, 82, 118),    # #1A5276
-    "Layer6": (21, 67, 96),     # #154360
-    "WM":     (93, 109, 126),   # #5D6D7E
-    "Unlabeled": (0, 0, 0),     # #000000
+    "Layer1":    (228,  26,  28),   # #E41A1C  red
+    "Layer2":    ( 55, 126, 184),   # #377EB8  blue
+    "Layer3":    (255, 255,  51),   # #FFFF33  yellow
+    "Layer4":    (152,  78, 163),   # #984EA3  purple
+    "Layer5":    ( 77, 175,  74),   # #4DAF4A  green
+    "Layer6":    (247, 129, 191),   # #F781BF  pink
+    "WM":        (153, 153, 153),   # #999999  medium gray
+    "Unlabeled": (  0,   0,   0),   # #000000  black
 }
 _FALLBACK_RGB = [
-    (0, 139, 139), (0, 128, 128), (14, 102, 85),
-    (30, 144, 255), (123, 104, 238), (106, 90, 205),
-    (72, 61, 139), (75, 0, 130), (142, 68, 173),
-    (26, 188, 156), (17, 122, 101), (25, 25, 112),
+    # ColorBrewer Set1 -- high-contrast for adjacent categories.
+    (228,  26,  28), ( 55, 126, 184), (255, 255,  51),
+    (152,  78, 163), ( 77, 175,  74), (247, 129, 191),
+    # Extra accents for >6 clusters.
+    (166,  86,  40), (153, 153, 153), (  0,   0,   0),
 ]
 
 def _normalize_label(label):
@@ -381,6 +507,14 @@ class ComparisonViewWidget(QWidget):
         self._sync_btn.clicked.connect(self._on_sync_toggled)
         ctrl_layout.addWidget(self._sync_btn)
 
+        self._reset_btn = QPushButton("Reset Highlight")
+        self._reset_btn.setToolTip(
+            "Clear click-highlight on both panels"
+        )
+        self._reset_btn.setStyleSheet(_BTN_DARK)
+        self._reset_btn.clicked.connect(self._on_reset_highlight)
+        ctrl_layout.addWidget(self._reset_btn)
+
         # Section selector
         section_label = QLabel("Section:")
         section_label.setStyleSheet(_LABEL_DARK)
@@ -405,7 +539,7 @@ class ComparisonViewWidget(QWidget):
         # Wrap each panel in a QFrame for the border
         self._gt_frame = QFrame()
         self._gt_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
-        self._gt_frame.setStyleSheet("QFrame { border: 2px solid #5DADE2; border-radius: 4px; }")
+        self._gt_frame.setStyleSheet("QFrame { border: 2px solid #ddd; border-radius: 4px; }")
         gt_frame_layout = QVBoxLayout(self._gt_frame)
         gt_frame_layout.setContentsMargins(2, 2, 2, 2)
 
@@ -414,7 +548,7 @@ class ComparisonViewWidget(QWidget):
 
         self._pred_frame = QFrame()
         self._pred_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
-        self._pred_frame.setStyleSheet("QFrame { border: 2px solid #E74C3C; border-radius: 4px; }")
+        self._pred_frame.setStyleSheet("QFrame { border: 2px solid #ddd; border-radius: 4px; }")
         pred_frame_layout = QVBoxLayout(self._pred_frame)
         pred_frame_layout.setContentsMargins(2, 2, 2, 2)
 
@@ -443,9 +577,13 @@ class ComparisonViewWidget(QWidget):
         bg = _IMAGE_BG_DARK if dark else _IMAGE_BG_LIGHT
         self.setStyleSheet(f"ComparisonViewWidget {{ background-color: {bg}; }}")
         self._sync_btn.setStyleSheet(_BTN_DARK if dark else _BTN_LIGHT)
+        self._reset_btn.setStyleSheet(_BTN_DARK if dark else _BTN_LIGHT)
         self._no_data_label.setStyleSheet(
             _NO_DATA_DARK if dark else _NO_DATA_LIGHT
         )
+        border_color = "#3a3a3e" if dark else "#ddd"
+        self._gt_frame.setStyleSheet(f"QFrame {{ border: 2px solid {border_color}; border-radius: 4px; }}")
+        self._pred_frame.setStyleSheet(f"QFrame {{ border: 2px solid {border_color}; border-radius: 4px; }}")
         self._gt_panel.update_theme(dark)
         self._pred_panel.update_theme(dark)
 
@@ -469,6 +607,11 @@ class ComparisonViewWidget(QWidget):
                 self._pred_panel.image_label.reset_view(emit=False)
         else:
             self._sync_btn.setText("Lock Sync")
+
+    def _on_reset_highlight(self) -> None:
+        # Clear click-highlight on both panels (GT and Results stay independent).
+        self._gt_panel.image_label.clear_highlight()
+        self._pred_panel.image_label.clear_highlight()
 
     def _on_gt_zoom(self, factor: float) -> None:
         if self._sync_locked and not self._syncing:
@@ -635,8 +778,8 @@ class ComparisonViewWidget(QWidget):
                     if barcode and label and label.upper() != "NA":
                         gt_labels[barcode] = label
 
-        # Build GT scatter data
-        gt_sx, gt_sy, gt_colors = [], [], []
+        # Build GT scatter data (parallel label list enables click-highlight)
+        gt_sx, gt_sy, gt_colors, gt_label_list = [], [], [], []
         for barcode, (hx, hy) in gt_positions.items():
             label = gt_labels.get(barcode, "")
             if not label:
@@ -644,6 +787,7 @@ class ComparisonViewWidget(QWidget):
             gt_sx.append(hy)  # px_col * scale -> image x
             gt_sy.append(hx)  # px_row * scale -> image y
             gt_colors.append(_get_color(label))
+            gt_label_list.append(label)
 
         gt_sx = np.array(gt_sx, dtype=np.float64)
         gt_sy = np.array(gt_sy, dtype=np.float64)
@@ -652,7 +796,9 @@ class ComparisonViewWidget(QWidget):
         if gt_image is not None and len(gt_sx) > 0:
             self._gt_panel.show_overlay(
                 gt_image, gt_sx, gt_sy, gt_colors,
-                filename=section_id, label=f"Ground Truth ({len(gt_sx)} cells)"
+                filename=section_id,
+                label=f"Ground Truth ({len(gt_sx)} cells)",
+                scatter_labels=gt_label_list,
             )
         elif gt_image is not None:
             self._gt_panel.show_image(gt_image, section_id, label="Ground Truth (no data)")
@@ -663,41 +809,54 @@ class ComparisonViewWidget(QWidget):
         res_dir = Path(self._res_root) / section_id if self._res_root else None
         res_csv_path = res_dir / "spatial" / "tissue_positions_list.csv" if res_dir else None
 
-        res_sx, res_sy, res_colors = [], [], []
+        res_sx, res_sy, res_colors, res_label_list = [], [], [], []
         res_has_data = False
 
         if res_csv_path and res_csv_path.exists():
             with open(res_csv_path) as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    in_tissue = row.get("in_tissue", "0").strip()
-                    if in_tissue != "1":
+                for line in f:
+                    line = line.strip()
+                    if not line:
                         continue
-                    barcode = row.get("barcode", "").strip()
-                    domain = row.get("domain", "").strip()
-                    if not barcode:
+                    parts = line.split(",")
+                    # Accept 6 or 7 column format
+                    if len(parts) < 6:
                         continue
-                    px_row = float(row.get("pxl_row", 0))
-                    px_col = float(row.get("pxl_col", 0))
+                    barcode = parts[0].strip()
+                    in_tissue = parts[1].strip()
+                    if in_tissue != "1" or not barcode:
+                        continue
+                    px_row = float(parts[4])
+                    px_col = float(parts[5])
+                    # Domain: 7th column if non-empty, otherwise use "Unlabeled"
+                    if len(parts) >= 7 and parts[6].strip():
+                        domain = parts[6].strip()
+                    else:
+                        domain = ""
                     hx = px_row * scale  # image y
                     hy = px_col * scale  # image x
 
                     if domain:
-                        # Map domain to layer color
+                        # Map domain to layer color + canonical label
                         norm = _normalize_label(domain)
                         if norm is not None:
                             if norm == 0:
                                 color = _get_color("WM")
+                                can_label = "WM"
                             else:
                                 color = _get_color(f"Layer{norm}")
+                                can_label = f"Layer{norm}"
                         else:
                             color = _get_color(domain)
+                            can_label = domain
                     else:
                         color = _get_color("Unlabeled")
+                        can_label = "Unlabeled"
 
                     res_sx.append(hy)  # px_col * scale -> image x
                     res_sy.append(hx)  # px_row * scale -> image y
                     res_colors.append(color)
+                    res_label_list.append(can_label)
 
             res_sx = np.array(res_sx, dtype=np.float64)
             res_sy = np.array(res_sy, dtype=np.float64)
@@ -712,7 +871,9 @@ class ComparisonViewWidget(QWidget):
             if bg_img is not None:
                 self._pred_panel.show_overlay(
                     bg_img, res_sx, res_sy, res_colors,
-                    filename=section_id, label=f"Results ({len(res_sx)} cells)"
+                    filename=section_id,
+                    label=f"Results ({len(res_sx)} cells)",
+                    scatter_labels=res_label_list,
                 )
             else:
                 self._pred_panel.clear()

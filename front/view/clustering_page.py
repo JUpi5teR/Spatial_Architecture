@@ -1,4 +1,4 @@
-﻿# coding: utf-8
+# coding: utf-8
 """Clustering page - Side-by-Side comparison + Spatial 3D viewer with hover panel."""
 from __future__ import annotations
 
@@ -472,7 +472,14 @@ class ClusteringPage(QWidget):
                 logger.error("load_results_dataset failed for %s: %s", sid, e)
         res_info = "%d cells" % len(res_ds.cells) if res_ds else "None"
         logger.info("3D spatial: %s GT=%d cells, Results=%s", sid, len(ds.cells), res_info)
-        self._spatial_viewer.load_section(ds, results_dataset=res_ds)
+        
+        # Determine error cache path
+        from pathlib import Path
+        cache_path = None
+        if self._res_root and res_ds:
+            cache_path = str(Path(self._res_root) / sid / "spatial" / "error_points.json")
+        
+        self._spatial_viewer.load_section(ds, results_dataset=res_ds, error_cache_path=cache_path)
 
 
     @property

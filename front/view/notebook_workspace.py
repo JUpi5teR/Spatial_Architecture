@@ -25,6 +25,7 @@ from view.statistics_view import StatisticsViewWidget
 from view.plots_view import PlotsViewWidget
 from view.heatmap_view import HeatmapViewWidget
 from view.datasets_view import DatasetsViewWidget
+from view.overview_dashboard import OverviewDashboardWidget
 from view.loading_overlay import LoadingOverlay
 
 SECTION_IDS = [
@@ -33,10 +34,12 @@ SECTION_IDS = [
     "151673", "151674", "151675", "151676",
 ]
 
-def _check_results_has_csv(res_root):
+def _check_results_has_csv(res_root, section_ids=None):
     if not res_root.exists():
         return False
-    for sid in SECTION_IDS:
+    if section_ids is None:
+        section_ids = SECTION_IDS
+    for sid in section_ids:
         sec_dir = res_root / sid
         if sec_dir.is_dir():
             # Check direct CSV/TSV files and also in spatial/ subfolder
@@ -147,6 +150,7 @@ class NotebookWorkspace(QWidget):
         self._heatmap_view.set_dark(self._dark)
         self._datasets_view.set_dark(self._dark)
         self._upload_view.set_dark(self._dark)
+        self._overview_view.set_dark(self._dark)
         self._update_topbar_theme()
 
     @property
@@ -210,6 +214,8 @@ class NotebookWorkspace(QWidget):
         self._datasets_view.dataset_activated.connect(self._on_dataset_loaded)
         self._datasets_view.dataset_renamed.connect(self._on_dataset_renamed)
         self._datasets_view.dataset_deleted.connect(self._on_dataset_deleted)
+        # Overview dashboard - reuses the placeholder slot in the stack.
+        self._overview_view = OverviewDashboardWidget(self._notebook, parent=self)
         self._empty_label = None
         self._placeholder_label = None
         self._empty_widget = self._make_empty('No dataset loaded.\nPlease upload data first.')
@@ -222,12 +228,12 @@ class NotebookWorkspace(QWidget):
         self._stack.addWidget(self._plots_view)          # 3
         self._stack.addWidget(self._heatmap_view)        # 4
         self._stack.addWidget(self._empty_widget)        # 5
-        self._stack.addWidget(self._page_placeholder)    # 6
+        self._stack.addWidget(self._overview_view)       # 6
         self._stack.addWidget(self._datasets_view)       # 7  DATASETS
         self._module_map = {
             'upload': 0, 'clustering': 1, 'statistics': 2,
             'plots': 3, 'heatmaps': 4,
-            'overview': 7, 'datasets': 7,
+            'overview': 6, 'datasets': 7,
         }
         body.addWidget(self._stack)
         root.addLayout(body)
@@ -275,18 +281,23 @@ class NotebookWorkspace(QWidget):
         if key == 'homepage':
             self.back_to_homepage.emit()
             return
-        # Datasets page is always accessible (no data required)
-        if key in ('upload', 'datasets'):
+        # Datasets page and overview dashboard are always accessible
+        # (no active dataset required). Overview aggregates across the
+        # notebook scope and shows an empty-state when nothing exists.
+        if key in ('upload', 'datasets', 'overview'):
             idx = self._module_map.get(key, 0)
             if key == 'datasets':
                 logger.info('_on_module_selected: datasets clicked, refreshing')
                 self._datasets_view.refresh()
                 logger.info('_on_module_selected: datasets page refreshed')
+            elif key == 'overview':
+                # Overview aggregates all datasets in this notebook, so
+                # a fresh snapshot is cheap and keeps the dashboard honest.
+                self._overview_view.refresh()
             self._stack.setCurrentIndex(idx)
             return
         # Analysis modules need data
-        if key in ('clustering', 'statistics', 'plots', 'heatmaps',
-                    'overview'):
+        if key in ('clustering', 'statistics', 'plots', 'heatmaps'):
             if self._current_dataset is None:
                 self.show_status_message('No dataset loaded. Please upload data first.')
                 self._stack.setCurrentWidget(self._empty_widget)
@@ -350,6 +361,9 @@ class NotebookWorkspace(QWidget):
             self._current_dataset = ds
             self._datasets_view.set_current_dataset(ds.id)
             self._load_data(ds)
+            # Refresh the overview dashboard so newly-loaded
+            # datasets are reflected in the KPI / chart strip.
+            self._overview_view.refresh()
             self.show_status_message('Loaded: ' + ds.name)
         except Exception as e:
             logger.error('_select_dataset failed: %s', e, exc_info=True)
@@ -392,6 +406,22 @@ class NotebookWorkspace(QWidget):
                 results_path=str(structure.results_root) if structure.results_root else None,
                 train_log_path=str(structure.train_log_dir) if structure.train_log_dir else None,
             )
+
+            # Pre-compute train_log statistics as soon as the dataset
+            # is registered. The overview dashboard reads this cache
+            # instead of re-parsing every CSV on each refresh.
+            if structure.train_log_dir:
+                try:
+                    from front.model.train_log_stats import (
+                        ensure_dataset_stats as _ensure_dataset_stats,
+                    )
+                    _ensure_dataset_stats(structure.train_log_dir)
+                except Exception as _exc:
+                    logger.warning(
+                        "Failed to pre-compute train_log stats at upload: %s",
+                        _exc,
+                    )
+
             self._refresh_datasets()
             self._datasets_view.refresh()
             for i in range(self._dataset_combo.count()):
@@ -399,6 +429,8 @@ class NotebookWorkspace(QWidget):
                     self._dataset_combo.setCurrentIndex(i)
                     break
             self._nb_mgr.touch(self._notebook.id)
+            # Keep the overview dashboard aligned with the new upload.
+            self._overview_view.refresh()
             self.notebook_updated.emit()
         except Exception as e:
             logger.error('Upload failed: %s', e, exc_info=True)
@@ -411,10 +443,21 @@ class NotebookWorkspace(QWidget):
         data_root = Path(ds.file_path)
         gt_dir = Path(ds.ground_truth_path) if ds.ground_truth_path else data_root
         res_dir = Path(ds.results_path) if ds.results_path else data_root
-        section_ids = self._scan_ids(data_root, gt_dir, res_dir)
         # Sync DataPathManager so analysis pages (plots, statistics, heatmaps)
         # can access train_log and other data via the path manager.
         self._path_mgr.set_root(data_root)
+        # Use scanned structure to resolve correct gt/res roots for irregular layouts
+        structure = self._path_mgr.structure()
+        if structure:
+            if structure.gt_root:
+                gt_dir = structure.gt_root
+            elif structure.results_root:
+                gt_dir = structure.results_root
+            if structure.results_root and structure.results_root != structure.gt_root:
+                res_dir = structure.results_root
+            section_ids = structure.section_ids
+        else:
+            section_ids = self._scan_ids(data_root, gt_dir, res_dir)
         try:
             # Try standard scan first
             self._collection = scan_images(gt_dir, res_dir, section_ids)
@@ -434,7 +477,7 @@ class NotebookWorkspace(QWidget):
                 return
             # Load overlay for 3D / cell-level display
             try:
-                has_pred = _check_results_has_csv(res_dir)
+                has_pred = _check_results_has_csv(res_dir, section_ids)
                 gt_col = 'layer_guess_reordered'
                 pred_col = 'GraphBased' if has_pred else '__no_results__'
                 self._overlay_datasets = load_all_overlay_datasets(
@@ -568,4 +611,5 @@ class NotebookWorkspace(QWidget):
         self._heatmap_view.set_dark(dark)
         self._datasets_view.set_dark(dark)
         self._upload_view.set_dark(dark)
+        self._overview_view.set_dark(dark)
         self._update_topbar_theme()

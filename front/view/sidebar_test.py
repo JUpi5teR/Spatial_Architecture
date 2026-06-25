@@ -1,4 +1,4 @@
-﻿"""ClustroView platform sidebar: 14 module entries grouped into sections.
+"""ClustroView platform sidebar: 14 module entries grouped into sections.
 
 The sidebar shows ALL ClustroView platform modules, but only "Clustering"
 is currently active. Other modules display a "module not implemented" hint

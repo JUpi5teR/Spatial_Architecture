@@ -1,4 +1,4 @@
-﻿# coding: utf-8
+# coding: utf-8
 
 """ClustroView main window - root navigation shell.
 
@@ -253,16 +253,23 @@ class MainWindow(QMainWindow):
 
 
 
-        # Replace or add to stack
-
+        # Replace or add to stack. Disconnect signals on the old workspace
+        # before deleteLater() so Qt cannot fire them on a half-destroyed
+        # widget (which surfaces as a QWidgetWindow "must be a top level
+        # window" warning on the next notebook switch).
         if self._stack.count() > 1:
-
             old = self._stack.widget(1)
-
             self._stack.removeWidget(old)
-
             if old:
-
+                for sig, slot in (
+                    (old.back_to_homepage, self.show_homepage),
+                    (old.theme_toggled, self._on_theme_toggled),
+                    (old.notebook_updated, self._homepage.refresh),
+                ):
+                    try:
+                        sig.disconnect(slot)
+                    except (TypeError, RuntimeError):
+                        pass
                 old.deleteLater()
 
 
