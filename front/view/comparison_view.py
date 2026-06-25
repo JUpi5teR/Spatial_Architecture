@@ -424,27 +424,27 @@ class ImagePanel(QWidget):
 
 # ---- Helper: load scatter data from spatial datasets ----
 
-# Qualitative palette with strong light/dark contrast: warm layers
-# use the light (Flat-UI) variants, cool layers use the dark variants
-# so adjacent cool layers (green / blue / purple) are clearly distinct.
+# Qualitative palette derived from ColorBrewer Set1 with the hue
+# order rotated so every adjacent Layer1..Layer6 sits at least
+# ~140 deg apart on the colour wheel. Adjacent layers no longer
+# fall in the same warm/cool family, which previously made Layer3
+# (light yellow) and Layer4 (dark green) hard to distinguish.
 _CLUSTER_COLORS = {
-    "Layer1":    (231,  76,  60),   # #E74C3C  light red
-    "Layer2":    (230, 126,  34),   # #E67E22  light orange
-    "Layer3":    (241, 196,  15),   # #F1C40F  light yellow
-    "Layer4":    ( 39, 174,  96),   # #27AE60  DARK green
-    "Layer5":    ( 41, 128, 185),   # #2980B9  DARK blue
-    "Layer6":    (142,  68, 173),   # #8E44AD  DARK purple
-    "WM":        (127, 140, 141),   # #7F8C8D  medium gray
-    "Unlabeled": ( 44,  62,  80),   # #2C3E50  dark slate
+    "Layer1":    (228,  26,  28),   # #E41A1C  red
+    "Layer2":    ( 55, 126, 184),   # #377EB8  blue
+    "Layer3":    (255, 255,  51),   # #FFFF33  yellow
+    "Layer4":    (152,  78, 163),   # #984EA3  purple
+    "Layer5":    ( 77, 175,  74),   # #4DAF4A  green
+    "Layer6":    (247, 129, 191),   # #F781BF  pink
+    "WM":        (153, 153, 153),   # #999999  medium gray
+    "Unlabeled": (  0,   0,   0),   # #000000  black
 }
 _FALLBACK_RGB = [
-    # Light warm
-    (231,  76,  60), (230, 126,  34), (241, 196,  15),
-    # Dark cool
-    ( 39, 174,  96), ( 41, 128, 185), (142,  68, 173),
-    # Mixed extras
-    (192,  57,  43), (211,  84,   0), (243, 156,  18),
-    ( 22, 160, 133), ( 31,  97, 141), (108,  52, 131),
+    # ColorBrewer Set1 -- high-contrast for adjacent categories.
+    (228,  26,  28), ( 55, 126, 184), (255, 255,  51),
+    (152,  78, 163), ( 77, 175,  74), (247, 129, 191),
+    # Extra accents for >6 clusters.
+    (166,  86,  40), (153, 153, 153), (  0,   0,   0),
 ]
 
 def _normalize_label(label):

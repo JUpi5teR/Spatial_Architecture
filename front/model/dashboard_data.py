@@ -43,6 +43,7 @@ from front.model.train_log_stats import (
     compute_dataset_stats as _compute_dataset_stats,
     ensure_dataset_stats as _ensure_dataset_stats,
     load_dataset_stats as _load_dataset_stats,
+    compute_per_sample_best as _compute_per_sample_best,
     read_metric_csv as _read_metric_csv_v2,
     save_dataset_stats as _save_dataset_stats,
 )
@@ -64,10 +65,13 @@ class DatasetSeries:
     notebook_id: int
     final_value: float          # value at the last epoch seen
     mean: float                 # mean across all epochs for this dataset
-    variance: float             # population variance across all epochs
+    variance: float             # always 0 (one max-seed representative value per image)
     min_value: float
     max_value: float
     epochs_seen: int
+    final_epoch: int = 0        # last epoch recorded for this sample
+    final_epoch_mean: float = 0.0  # cross-seed mean at final epoch
+    final_epoch_variance: float = 0.0  # cross-seed variance at final epoch
 
     def as_display(self) -> Dict[str, float]:
         """Return only the fields safe to render in the UI."""
@@ -80,6 +84,9 @@ class DatasetSeries:
             "min": self.min_value,
             "max": self.max_value,
             "epochs": self.epochs_seen,
+            "final_epoch": self.final_epoch,
+            "final_epoch_mean": self.final_epoch_mean,
+            "final_epoch_variance": self.final_epoch_variance,
         }
 
 
@@ -427,19 +434,22 @@ class DashboardDataService:
         Behaviour matches the ``train_log_stats`` module:
 
         * The CSV reader dedupes on ``(sample, seed, epoch)``.
-        * Per-sample "value" used downstream is the max of that
-          sample's deduped rows (regardless of seed).
-        * ``grand_mean`` / ``grand_variance`` are taken across the
-          per-sample maxes, so the metric's representative value is
-          the mean of each image's best run.
+        * Each sample's representative point is the strongest value
+          across *all* epochs and seeds (``max(values)`` for
+          higher-better metrics, last value for lower-better).
+        * ``grand_mean`` / ``grand_variance`` are taken across
+          the per-sample representative values, and the
+          dataset-level panel uses the same per-sample values as
+          its representative unit.
         """
         series: List[DatasetSeries] = []
         per_sample: Dict[str, DatasetSeries] = {}
         # Per-dataset: collect one entry per sample, equal to that
-        # sample's best (max) value. ``_build_dataset_groups`` then
-        # aggregates across samples within a dataset, so the dataset's
-        # combined_mean = mean of per-image best values.
-        per_dataset_image_best: Dict[str, Dict[str, float]] = {}
+        # sample's strongest value across all epochs/seeds. So
+        # ``_build_dataset_groups`` aggregates across samples within
+        # a dataset using those per-sample best values, giving the
+        # dataset its combined_mean / combined_variance.
+        per_dataset_image_final: Dict[str, Dict[str, float]] = {}
         for ds in datasets:
             log_dir = ds.train_log_path
             if not log_dir:
@@ -452,49 +462,54 @@ class DashboardDataService:
                 if not entries:
                     continue
                 values = [v for _, _, v in entries]
-                # For higher-better metrics the representative value
-                # is the max across (epoch, seed); for loss (and other
-                # lower-better metrics) it is the value at the LAST
-                # recorded epoch -- see compute_image_stat in
-                # train_log_stats.py for the full contract.
-                if metric.lower() in _TL_HIGHER_IS_BETTER:
-                    best_v = max(values)
-                else:
-                    best_v = values[-1]
                 mean_v = sum(values) / len(values)
-                var_v = _variance(values)
+                epochs_for_sample = {e for e, _, _ in entries}
+                final_epoch = max(epochs_for_sample) if epochs_for_sample else 0
+                # Delegate to the shared helper so every consumer
+                # (dashboard, statistics, train_log_stats) uses the
+                # same per-sample best-value selection.
+                per_sample_best = _compute_per_sample_best(
+                    {sample_id: entries}, metric,
+                )
+                rep_v = per_sample_best[sample_id]
+                rep_var = 0.0
                 series_row = DatasetSeries(
                     name=ds.name,
                     sample_id=sample_id,
                     notebook_id=ds.notebook_id,
-                    final_value=best_v,
+                    final_value=rep_v,
                     mean=mean_v,
-                    variance=var_v,
+                    variance=0.0,
                     min_value=min(values),
                     max_value=max(values),
                     epochs_seen=len(values),
+                    final_epoch=final_epoch,
+                    final_epoch_mean=rep_v,
+                    final_epoch_variance=rep_var,
                 )
                 # Last writer wins; mirrors a user re-uploading the same sample.
                 per_sample[sample_id] = series_row
-                per_dataset_image_best.setdefault(ds.name, {})[sample_id] = best_v
+                per_dataset_image_final.setdefault(
+                    ds.name, {}
+                )[sample_id] = rep_v
 
         if not per_sample:
             return None
 
         series = list(per_sample.values())
-        # Use per-sample best_value (max across the deduped rows) as
-        # the metric's representative unit. Mean and variance are then
-        # taken across those per-image bests.
-        finals = [s.final_value for s in series]
+        # Per-sample representative point is now the cross-seed mean
+        # at the sample's final epoch; mean and variance are taken
+        # across those per-image final-epoch means.
+        finals = [s.final_epoch_mean for s in series]
         grand_mean = sum(finals) / len(finals)
         grand_var = _variance(finals)
         higher_better = _is_higher_better(metric)
         if higher_better:
-            best = max(series, key=lambda s: s.final_value)
-            worst = min(series, key=lambda s: s.final_value)
+            best = max(series, key=lambda s: s.final_epoch_mean)
+            worst = min(series, key=lambda s: s.final_epoch_mean)
         else:
-            best = min(series, key=lambda s: s.final_value)
-            worst = max(series, key=lambda s: s.final_value)
+            best = min(series, key=lambda s: s.final_epoch_mean)
+            worst = max(series, key=lambda s: s.final_epoch_mean)
 
         summary = MetricSummary(
             metric=metric,
@@ -502,26 +517,23 @@ class DashboardDataService:
             grand_mean=grand_mean,
             grand_variance=grand_var,
             best_sample_id=best.sample_id,
-            best_value=best.final_value,
+            best_value=best.final_epoch_mean,
             worst_sample_id=worst.sample_id,
-            worst_value=worst.final_value,
+            worst_value=worst.final_epoch_mean,
             series=series,
         )
         # Build dataset-level aggregation and pick the strongest / weakest
-        # dataset by combined_mean. Populate the summary so KPI and
-        # Metric Overview cards can surface the best *dataset* rather
-        # than the best single sample.
-        # For dataset aggregation we feed each image's *best* value
-        # (not every per-epoch value), matching the contract used by
-        # ``train_log_stats``: combined_mean = mean of per-image best
-        # values, combined_variance = variance of those best values.
+        # dataset by combined_mean. Populated from per-image final-epoch
+        # means (one value per sample) so combined_mean = mean of
+        # per-image final-epoch means and combined_variance = variance
+        # of those means across samples within the dataset.
         per_dataset_values = {
-            name: list(image_bests.values())
-            for name, image_bests in per_dataset_image_best.items()
+            name: list(image_finals.values())
+            for name, image_finals in per_dataset_image_final.items()
         }
         per_dataset_samples = {
-            name: len(image_bests)
-            for name, image_bests in per_dataset_image_best.items()
+            name: len(image_finals)
+            for name, image_finals in per_dataset_image_final.items()
         }
         groups = _build_dataset_groups(per_dataset_values, per_dataset_samples)
         bd_name, bd_val, wd_name, wd_val = _pick_best_worst_dataset(

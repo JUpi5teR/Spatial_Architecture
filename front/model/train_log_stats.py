@@ -58,7 +58,7 @@ from utils.logger import logger
 
 
 STATS_FILENAME = "_stats.json"
-STATS_VERSION = 1
+STATS_VERSION = 3
 
 # Metric families that should be treated as "higher is better" when
 # picking the best / worst image. Loss / error-style metrics invert
@@ -77,13 +77,16 @@ class ImageStat:
     best_epoch: int = 0
     best_seed: int = 0
     mean: float = 0.0
-    variance: float = 0.0
+    variance: float = 0.0           # always 0 (one max-seed representative value per image)
     min_value: float = 0.0
     max_value: float = 0.0
     epochs_seen: int = 0
     seeds_seen: int = 0
     raw_count: int = 0
     dedup_count: int = 0
+    final_epoch: int = 0
+    final_epoch_mean: float = 0.0
+    final_epoch_variance: float = 0.0
 
     def as_dict(self) -> Dict[str, float]:
         return {
@@ -98,6 +101,9 @@ class ImageStat:
             "seeds_seen": self.seeds_seen,
             "raw_count": self.raw_count,
             "dedup_count": self.dedup_count,
+            "final_epoch": self.final_epoch,
+            "final_epoch_mean": self.final_epoch_mean,
+            "final_epoch_variance": self.final_epoch_variance,
         }
 
 
@@ -155,6 +161,31 @@ def _variance(values: Sequence[float]) -> float:
         return 0.0
     mean = sum(values) / n
     return sum((v - mean) ** 2 for v in values) / n
+
+
+def compute_per_sample_best(
+    per_sample_rows: Dict[str, List[Tuple[int, int, float]]],
+    metric: str = "",
+) -> Dict[str, float]:
+    """For each sample, pick the strongest value across *all* epochs and seeds.
+
+    Higher-better metrics (ari, nmi, hs, cs, acc): ``max(values)``.
+    Lower-better metrics (loss): last recorded value (``values[-1]``).
+
+    Returns ``{sample_id: best_value}``.
+    """
+    metric_lower = metric.lower() if metric else ""
+    higher_better = (metric_lower in HIGHER_IS_BETTER) if metric_lower else True
+    result: Dict[str, float] = {}
+    for sample_id, entries in per_sample_rows.items():
+        if not entries:
+            continue
+        values = [v for _, _, v in entries]
+        if higher_better:
+            result[sample_id] = max(values)
+        else:
+            result[sample_id] = values[-1]
+    return result
 
 
 def _safe_float(s: object) -> Optional[float]:
@@ -321,19 +352,30 @@ def compute_image_stat(
     epochs = {e for e, _, _ in entries}
     seeds = {s for _, s, _ in entries}
     mean_v = sum(values) / len(values)
-    var_v = _variance(values)
+    # Per-image representative: the strongest value across *all*
+    # epochs and seeds. For higher-better metrics this is the max
+    # across all entries; for lower-better metrics it is the value
+    # at the last recorded epoch. That single value flows into the
+    # dataset-level combined_mean / combined_variance aggregation,
+    # so per-image variance collapses to 0 (one value, no spread).
+    final_epoch = max(epochs) if epochs else 0
+    final_epoch_mean_v = float(best_value)
+    final_epoch_var_v = 0.0
     return ImageStat(
         best_value=float(best_value),
         best_epoch=int(best_epoch),
         best_seed=int(best_seed),
         mean=float(mean_v),
-        variance=float(var_v),
+        variance=float(final_epoch_var_v),
         min_value=float(min(values)),
         max_value=float(max(values)),
         epochs_seen=len(epochs),
         seeds_seen=len(seeds),
         raw_count=raw_count,
         dedup_count=dedup_count,
+        final_epoch=int(final_epoch),
+        final_epoch_mean=float(final_epoch_mean_v),
+        final_epoch_variance=float(final_epoch_var_v),
     )
 
 
@@ -354,24 +396,28 @@ def compute_metric_stat(
     if not per_image:
         return MetricStat(metric=metric)
 
-    best_values = [s.best_value for s in per_image.values()]
-    grand_mean = sum(best_values) / len(best_values)
-    grand_var = _variance(best_values)
+    # Grand aggregate uses each image's final-epoch cross-seed mean,
+    # not its best run across all epochs. This keeps the cache
+    # ``_stats.json`` consistent with what the overview dashboard
+    # renders on top of these CSV files.
+    final_means = [s.final_epoch_mean for s in per_image.values()]
+    grand_mean = sum(final_means) / len(final_means)
+    grand_var = _variance(final_means)
 
     higher_better = metric.lower() in HIGHER_IS_BETTER
     if higher_better:
         best_image_name = max(
-            per_image, key=lambda k: per_image[k].best_value
+            per_image, key=lambda k: per_image[k].final_epoch_mean
         )
         worst_image_name = min(
-            per_image, key=lambda k: per_image[k].best_value
+            per_image, key=lambda k: per_image[k].final_epoch_mean
         )
     else:
         best_image_name = min(
-            per_image, key=lambda k: per_image[k].best_value
+            per_image, key=lambda k: per_image[k].final_epoch_mean
         )
         worst_image_name = max(
-            per_image, key=lambda k: per_image[k].best_value
+            per_image, key=lambda k: per_image[k].final_epoch_mean
         )
 
     return MetricStat(
@@ -379,9 +425,9 @@ def compute_metric_stat(
         grand_mean=float(grand_mean),
         grand_variance=float(grand_var),
         best_image=best_image_name,
-        best_image_value=float(per_image[best_image_name].best_value),
+        best_image_value=float(per_image[best_image_name].final_epoch_mean),
         worst_image=worst_image_name,
-        worst_image_value=float(per_image[worst_image_name].best_value),
+        worst_image_value=float(per_image[worst_image_name].final_epoch_mean),
         image_count=len(per_image),
         per_image=per_image,
     )
@@ -502,6 +548,9 @@ def load_dataset_stats(train_log_dir: Path) -> Optional[DatasetStats]:
                     seeds_seen=int(irst.get("seeds_seen", 0)),
                     raw_count=int(irst.get("raw_count", 0)),
                     dedup_count=int(irst.get("dedup_count", 0)),
+                    final_epoch=int(irst.get("final_epoch", 0)),
+                    final_epoch_mean=float(irst.get("final_epoch_mean", 0.0)),
+                    final_epoch_variance=float(irst.get("final_epoch_variance", 0.0)),
                 )
         stats.metrics[str(metric_name)] = MetricStat(
             metric=str(metric_name),

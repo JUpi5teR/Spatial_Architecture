@@ -295,7 +295,8 @@ class DualAxisBarChart(QFrame):
         sub = QFont(_FONT_STACK, 11)
         sub.setWeight(QFont.Weight.Normal)
         p.setFont(sub)
-        sub_text = "Left axis: mean over epochs. Right axis: variance across epochs."
+        sub_text = ("Left axis: mean at final epoch. "
+                    "Right axis: variance at final epoch.")
         p.drawText(QRectF(rect.left() + 116, rect.top() + 16,
                           rect.width() - 136, 26),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, sub_text)
@@ -737,7 +738,7 @@ class BarChartPanel(QFrame):
         self._combo.currentTextChanged.connect(self._on_metric_changed)
         s_ly.addWidget(self._combo)
         s_ly.addStretch()
-        self._hint = QLabel("Mean over epochs  -  Variance across epochs")
+        self._hint = QLabel("Mean at final epoch  -  Variance at final epoch")
         self._hint.setObjectName("selectorHint")
         s_ly.addWidget(self._hint)
         layout.addWidget(self._selector_row)
@@ -745,6 +746,9 @@ class BarChartPanel(QFrame):
 
     def set_metric_provider(self, cb) -> None:
         self._metric_changed_cb = cb
+
+    def set_hint(self, text: str) -> None:
+        self._hint.setText(text)
 
     def set_data(
         self,

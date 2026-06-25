@@ -371,19 +371,32 @@ class OverviewDashboardWidget(QWidget):
         highlights_ly.addLayout(chips_row)
         root.addWidget(highlights_panel)
 
-        # ---- Main: bar chart + metric overview ----
-        main_row = QHBoxLayout()
-        main_row.setSpacing(18)
+        # ---- Main grid: 2x2 layout ----
+        # Top-left = dataset bar chart, top-right + bottom-right =
+        # metric overview (spans both rows), bottom-left = training
+        # curves panel. This pulls the curves panel into the gap
+        # below the dataset bar chart and lets the per-sample bar
+        # chart shift up to fill the freed vertical space, without
+        # colliding with the metric overview column on the right.
+        main_grid = QGridLayout()
+        main_grid.setHorizontalSpacing(18)
+        main_grid.setVerticalSpacing(18)
         # Top-level bar chart panel: aggregates by dataset name
         # (sts/all/none) using combined mean & variance pooled across
         # every sample+epoch that belongs to a dataset with that name.
         self._sample_bar_panel = BarChartPanel()
         self._sample_bar_panel.set_metric_provider(self._on_sample_metric_changed)
         self._sample_bar_panel.setMinimumHeight(360)
+        self._sample_bar_panel.set_hint(
+            "Mean at final epoch (cross-seed)  -  Variance at final epoch"
+        )
         self._dataset_bar_panel = BarChartPanel()
         self._dataset_bar_panel.set_metric_provider(self._on_dataset_metric_changed)
-        self._dataset_bar_panel.setMinimumHeight(440)
-        main_row.addWidget(self._dataset_bar_panel, 3)
+        self._dataset_bar_panel.setMinimumHeight(360)
+        self._dataset_bar_panel.set_hint(
+            "Mean across samples  -  Variance across samples at final epoch"
+        )
+        main_grid.addWidget(self._dataset_bar_panel, 0, 0)
 
         # Right column: metric overview cards stacked vertically.
         right_col = QVBoxLayout()
@@ -408,14 +421,17 @@ class OverviewDashboardWidget(QWidget):
         ov_ly.addLayout(self._overview_holder)
         ov_ly.addStretch(1)
         right_col.addWidget(self._overview_panel, 1)
-        main_row.addLayout(right_col, 1)
-        root.addLayout(main_row)
+        main_grid.addLayout(right_col, 0, 1, 2, 1)
 
         # ---- Training curves row ----
+        # Compact, single-row layout: each metric gets one thumb in
+        # its own column so the curves panel stays short and fills
+        # the vertical gap between the dataset bar chart and the
+        # per-sample bar chart below.
         curves_panel = _PanelSurface()
         curves_ly = QVBoxLayout(curves_panel)
-        curves_ly.setContentsMargins(16, 14, 16, 14)
-        curves_ly.setSpacing(10)
+        curves_ly.setContentsMargins(16, 10, 16, 10)
+        curves_ly.setSpacing(6)
         curves_title = QLabel("Training Curves")
         curves_title.setObjectName("curvesTitle")
         curves_ly.addWidget(curves_title)
@@ -426,35 +442,48 @@ class OverviewDashboardWidget(QWidget):
         curves_subtitle.setObjectName("curvesSubtitle")
         curves_subtitle.setWordWrap(True)
         curves_ly.addWidget(curves_subtitle)
-        curves_grid = QGridLayout()
-        curves_grid.setSpacing(12)
+        curves_grid = QHBoxLayout()
+        curves_grid.setSpacing(10)
         curves_grid.setContentsMargins(0, 0, 0, 0)
-        for i, metric in enumerate(METRICS):
+        for metric in METRICS:
             color = _METRIC_COLORS.get(metric, PRIMARY_COLOR)
             thumb = TrainingCurveThumb(metric, color=color)
-            thumb.setMinimumHeight(150)
+            thumb.setMinimumHeight(96)
+            thumb.setMinimumWidth(0)
             self._thumbs[metric] = thumb
-            curves_grid.addWidget(thumb, i // 3, i % 3)
-        curves_grid.setColumnStretch(0, 1)
-        curves_grid.setColumnStretch(1, 1)
-        curves_grid.setColumnStretch(2, 1)
+            curves_grid.addWidget(thumb, 1)
         curves_ly.addLayout(curves_grid)
-        root.addWidget(curves_panel)
+        curves_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        curves_panel.setMinimumHeight(180)
+        curves_panel.setMaximumHeight(220)
+        main_grid.addWidget(curves_panel, 1, 0)
 
-        # ---- Per-sample bar chart (moved down from its original
-        # position above the metric overview; replaced there by the
-        # per-dataset-aggregated panel).
+        main_grid.setRowStretch(0, 3)
+        main_grid.setRowStretch(1, 1)
+        main_grid.setColumnStretch(0, 3)
+        main_grid.setColumnStretch(1, 1)
+        root.addLayout(main_grid)
+
+        # ---- Per-sample bar chart ----
+        # Now sits directly below the 2x2 main grid; the training
+        # curves panel was pulled into the grid so this row shifts
+        # up to fill the freed vertical space without crowding the
+        # metric overview on the right.
         self._sample_bar_panel.setObjectName("sampleBarPanel")
         sample_panel = _PanelSurface()
         sample_ly = QVBoxLayout(sample_panel)
-        sample_ly.setContentsMargins(16, 14, 16, 14)
-        sample_ly.setSpacing(10)
+        sample_ly.setContentsMargins(16, 12, 16, 12)
+        sample_ly.setSpacing(8)
         sample_title = QLabel("Per-sample Mean & Variance")
         sample_title.setObjectName("sampleBarTitle")
         sample_ly.addWidget(sample_title)
         sample_subtitle = QLabel(
-            "Each bar is one tissue sample; mean and variance are taken "
-            "across training epochs for that sample."
+            "Each bar is one tissue sample; the mean and variance are "
+            "taken at the sample'\''s final epoch across seeds, so the "
+            "panel reflects the spread of final-state results."
         )
         sample_subtitle.setObjectName("sampleBarSubtitle")
         sample_subtitle.setWordWrap(True)
@@ -550,7 +579,12 @@ class OverviewDashboardWidget(QWidget):
             mean_attr="combined_mean",
             variance_attr="combined_variance",
         )
-        self._sample_bar_panel.set_data(self._current_metric, summary.series)
+        self._sample_bar_panel.set_data(
+            self._current_metric,
+            summary.series,
+            mean_attr="final_epoch_mean",
+            variance_attr="final_epoch_variance",
+        )
 
         # Training curves
         for metric, thumb in self._thumbs.items():
@@ -560,19 +594,44 @@ class OverviewDashboardWidget(QWidget):
             else:
                 thumb.clear()
 
-        # Highlight chips: best dataset per metric.
+        # Highlight chips: all metrics share the same dataset - the
+        # one whose mean ARI is highest across the notebook. Each
+        # chip then displays that dataset combined_mean for its
+        # own metric. combined_mean is the mean of each image
+        # final-epoch (max-seed) value, and combined_variance is
+        # the population variance of those per-image values.
+        top_ds_name = self._pick_top_dataset_by_ari(snap)
         for metric, chip in self._highlight_chips.items():
             m_summary = snap.metrics.get(metric)
-            if m_summary is None or not m_summary.best_dataset_name:
+            if m_summary is None or not top_ds_name:
                 chip.set_data("-", None)
-            else:
-                chip.set_data(
-                    m_summary.best_dataset_name,
-                    m_summary.best_dataset_value,
-                )
+                continue
+            group = m_summary.dataset_groups.get(top_ds_name)
+            if group is None:
+                chip.set_data(top_ds_name, None)
+                continue
+            chip.set_data(top_ds_name, group.combined_mean)
 
         # Metric overview cards
         self._refresh_overview_cards(snap)
+
+    @staticmethod
+    def _pick_top_dataset_by_ari(snap: DashboardSnapshot) -> str:
+        """Return the dataset with the highest mean ARI.
+
+        ARI is higher-is-better, so the top dataset is the one
+        with the largest combined_mean ARI value. Falls back to
+        an empty string when ARI is absent so the Highlights
+        chips render "-" instead of a stale name.
+        """
+        ari_summary = snap.metrics.get("ari")
+        if ari_summary is None or not ari_summary.dataset_groups:
+            return ""
+        top = max(
+            ari_summary.dataset_groups.values(),
+            key=lambda g: g.combined_mean,
+        )
+        return top.name
 
     def _refresh_overview_cards(self, snap: DashboardSnapshot) -> None:
         # Clear existing cards
@@ -617,7 +676,12 @@ class OverviewDashboardWidget(QWidget):
             variance_attr="combined_variance",
         )
         # Keep the sample-level panel in sync with the same metric.
-        self._sample_bar_panel.set_data(metric, summary.series)
+        self._sample_bar_panel.set_data(
+            metric,
+            summary.series,
+            mean_attr="final_epoch_mean",
+            variance_attr="final_epoch_variance",
+        )
 
     def _on_sample_metric_changed(self, metric: str) -> None:
         if not metric or self._snapshot is None:
@@ -627,7 +691,12 @@ class OverviewDashboardWidget(QWidget):
             self._sample_bar_panel.clear()
             return
         self._current_metric = metric
-        self._sample_bar_panel.set_data(metric, summary.series)
+        self._sample_bar_panel.set_data(
+            metric,
+            summary.series,
+            mean_attr="final_epoch_mean",
+            variance_attr="final_epoch_variance",
+        )
         # Keep the dataset-level panel in sync with the same metric.
         self._dataset_bar_panel.set_data(
             metric,

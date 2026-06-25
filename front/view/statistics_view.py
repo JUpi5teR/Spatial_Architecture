@@ -1,8 +1,8 @@
-# coding: utf-8
-"""Statistics 页面 —— 展示每个样本的聚类评价指标柱状图。
+﻿# coding: utf-8
+"""Statistics 椤甸潰 鈥斺€?灞曠ず姣忎釜鏍锋湰鐨勮仛绫昏瘎浠锋寚鏍囨煴鐘跺浘銆?
 
-指标: ARI, NMI, HS, CS
-展示: 每个样本一组柱子 + 全局 Mean / Median
+鎸囨爣: ARI, NMI, HS, CS
+灞曠ず: 姣忎釜鏍锋湰涓€缁勬煴瀛?+ 鍏ㄥ眬 Mean / Median
 """
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import pandas as pd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
@@ -20,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from model.data_path import DataPathManager, TRAIN_LOG_METRICS
+from front.model.train_log_stats import compute_per_sample_best, read_metric_csv
 from utils.logger import logger
 
 
@@ -52,7 +52,7 @@ class StatisticsViewWidget(QWidget):
         for lbl in self.findChildren(QLabel):
             if lbl.text().startswith("≡"):
                 lbl.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {fg};")
-            elif lbl.text() == "选择指标:":
+            elif lbl.text() == "閫夋嫨鎸囨爣:":
                 lbl.setStyleSheet(f"font-size: 12px; color: {fg};")
         if self._metric_combo:
             self._metric_combo.setStyleSheet(
@@ -80,7 +80,7 @@ class StatisticsViewWidget(QWidget):
 
         # metric selector
         sel_row = QHBoxLayout()
-        sel_row.addWidget(QLabel("选择指标: "))
+        sel_row.addWidget(QLabel("閫夋嫨鎸囨爣: "))
         self._metric_combo = QComboBox()
         self._metric_combo.setFixedWidth(140)
         self._metric_combo.setStyleSheet(
@@ -105,13 +105,13 @@ class StatisticsViewWidget(QWidget):
     def load_data(self) -> None:
         """Scan train_log, populate metric selector, draw first metric."""
         if not self._mgr.has_valid_data():
-            self._draw_placeholder("\u26A0  请先上传数据文件夹 (Upload Data)")
+            self._draw_placeholder("\u26A0  璇峰厛涓婁紶鏁版嵁鏂囦欢澶?(Upload Data)")
             self._loaded = False
             return
 
         structure = self._mgr.structure()
         if structure is None or not structure.has_train_log or not structure.train_log_metrics:
-            self._draw_placeholder("\u2139  train_log 未找到，暂无统计数据显示")
+            self._draw_placeholder("\u2139  train_log 鏈壘鍒帮紝鏆傛棤缁熻鏁版嵁鏄剧ず")
             self._loaded = False
             return
 
@@ -149,69 +149,18 @@ class StatisticsViewWidget(QWidget):
             self._draw_placeholder(f"File not found: {csv_path}")
             return
 
-        try:
-            df = pd.read_csv(csv_path)
-        except Exception as exc:
-            logger.error("Failed to read %s: %s", csv_path, exc)
-            self._draw_placeholder(f"Read error: {exc}")
+        # Use the shared CSV reader and per-sample-best helper so the
+        # statistics view computes the same per-sample representative
+        # values as the overview dashboard and train_log_stats module.
+        per_sample_rows, _raw, _dedup = read_metric_csv(csv_path)
+        if not per_sample_rows:
+            self._draw_placeholder("No data in CSV")
             return
 
-        if df.empty:
-            self._draw_placeholder("CSV is empty")
-            return
+        sample_best = compute_per_sample_best(per_sample_rows, self._metric)
+        labels = sorted(sample_best.keys())
+        values_arr = np.array([sample_best[k] for k in labels], dtype=float)
 
-        # Strip whitespace from column names
-        df.columns = [str(c).strip() for c in df.columns]
-
-        # Detect long format (epoch, sample, metric_value) and pivot to wide
-        sample_col_key = None
-        for c in df.columns:
-            if c.lower() == "sample":
-                sample_col_key = c
-                break
-        if sample_col_key is not None:
-            value_cols = [c for c in df.columns if c.lower() not in ("epoch", "sample")]
-            if not value_cols:
-                self._draw_placeholder("No numeric column in CSV")
-                return
-            # Use the LAST value column (skips extra columns like "seed")
-            # The metric column is typically the last one in long format
-            value_col = value_cols[-1]
-            try:
-                # ``aggfunc="last"`` picks the most recently recorded
-                # seed at each (epoch, sample) cell, which is the
-                # value we want for the final-epoch bar chart (and
-                # especially for ``loss`` where the LAST epoch's loss
-                # is the metric's representative value).
-                df = df.pivot_table(index="epoch", columns=sample_col_key, values=value_col, aggfunc="last")
-                df = df.reset_index()
-            except Exception as exc:
-                logger.warning("Pivot failed for %s: %s", csv_path, exc)
-                self._draw_placeholder(f"Data format error: {exc}")
-                return
-
-        if df.empty:
-            self._draw_placeholder("No data after processing")
-            return
-
-        # Get last epoch row for final values
-        last_row = df.iloc[-1]
-        sample_cols = [c for c in df.columns if str(c).lower() not in ("epoch", "")]
-        if not sample_cols:
-            self._draw_placeholder("No sample columns")
-            return
-
-        values = []
-        labels = []
-        for col in sample_cols:
-            try:
-                v = float(last_row[col])
-            except (ValueError, TypeError):
-                v = np.nan
-            values.append(v)
-            labels.append(str(col))
-
-        values_arr = np.array(values, dtype=float)
         valid = ~np.isnan(values_arr)
         valid_vals = values_arr[valid]
 
@@ -246,7 +195,7 @@ class StatisticsViewWidget(QWidget):
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
         ax.set_ylabel(self._metric.upper(), fontsize=12)
-        ax.set_title(f"{self._metric.upper()} - Final Epoch", fontsize=14, fontweight="bold")
+        ax.set_title(f"{self._metric.upper()} - Best per Sample", fontsize=14, fontweight="bold")
         ax.legend(fontsize=10)
         ax.grid(axis="y", alpha=0.3)
 
