@@ -1,11 +1,14 @@
-﻿# coding: utf-8
-"""Statistics 椤甸潰 鈥斺€?灞曠ず姣忎釜鏍锋湰鐨勮仛绫昏瘎浠锋寚鏍囨煴鐘跺浘銆?
+# coding: utf-8
+"""Statistics page -- bar chart + _stats.json matrix table.
 
-鎸囨爣: ARI, NMI, HS, CS
-灞曠ず: 姣忎釜鏍锋湰涓€缁勬煴瀛?+ 鍏ㄥ眬 Mean / Median
+指标: ARI, NMI, HS, CS
+展示: 每个样本一组柱子 + 全局 Mean / Median
+
+下方为 train_log/_stats.json 矩阵表格，以行=指标、列=样本的 CSV 矩阵形式展示。
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -14,8 +17,11 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget, QComboBox,
+    QFrame, QHBoxLayout, QHeaderView, QLabel, QScrollArea,
+    QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget, QComboBox,
 )
 
 from model.data_path import DataPathManager, TRAIN_LOG_METRICS
@@ -24,10 +30,7 @@ from utils.logger import logger
 
 
 class StatisticsViewWidget(QWidget):
-    """Bar-chart view of clustering metrics per sample.
-
-    Reads from train_log/ CSV files; displays one metric at a time.
-    """
+    """Bar-chart view of clustering metrics per sample + _stats.json matrix."""
 
     def __init__(self, path_mgr: DataPathManager, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -38,6 +41,7 @@ class StatisticsViewWidget(QWidget):
         self._metric = "ari"
         self._loaded = False
         self._dark = False
+        self._stats_table: Optional[QTableWidget] = None
 
         self._build_ui()
 
@@ -50,10 +54,15 @@ class StatisticsViewWidget(QWidget):
         combo_border = "#3a3a3e" if dark else "#ddd"
         self.setStyleSheet(f"StatisticsViewWidget {{ background-color: {bg}; }}")
         for lbl in self.findChildren(QLabel):
-            if lbl.text().startswith("≡"):
+            txt = lbl.text()
+            if txt.startswith("\u2261"):
                 lbl.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {fg};")
-            elif lbl.text() == "閫夋嫨鎸囨爣:":
+            elif "\u6307\u6807" in txt:
                 lbl.setStyleSheet(f"font-size: 12px; color: {fg};")
+            elif hasattr(lbl, "objectName") and lbl.objectName() == "statsTableTitle":
+                lbl.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {fg}; padding-top: 8px;")
+            elif hasattr(lbl, "objectName") and lbl.objectName() == "statsTableHint":
+                lbl.setStyleSheet(f"font-size: 11px; color: {'#8a8a90' if dark else '#888'}; padding-bottom: 4px;")
         if self._metric_combo:
             self._metric_combo.setStyleSheet(
                 f"QComboBox {{ background: {combo_bg}; color: {combo_fg}; border: 1px solid {combo_border}; border-radius: 4px; padding: 4px 8px; }}"
@@ -68,9 +77,26 @@ class StatisticsViewWidget(QWidget):
                 ax.xaxis.label.set_color(fg)
                 ax.yaxis.label.set_color(fg)
                 ax.title.set_color(fg)
+        self._apply_table_theme()
+
 
     def _build_ui(self) -> None:
-        root_ly = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollBar:vertical { background: transparent; width: 8px; }"
+            "QScrollBar::handle:vertical { background: rgba(128,128,128,0.3); border-radius: 4px; min-height: 30px; }"
+            "QScrollBar::handle:vertical:hover { background: rgba(128,128,128,0.5); }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+        )
+
+        inner = QWidget()
+        inner.setObjectName("statisticsInner")
+
+        root_ly = QVBoxLayout(inner)
         root_ly.setContentsMargins(40, 34, 40, 34)
         root_ly.setSpacing(12)
 
@@ -78,9 +104,8 @@ class StatisticsViewWidget(QWidget):
         title.setStyleSheet("font-size: 24px; font-weight: 800; color: #1a1a1a;")
         root_ly.addWidget(title)
 
-        # metric selector
         sel_row = QHBoxLayout()
-        sel_row.addWidget(QLabel("閫夋嫨鎸囨爣: "))
+        sel_row.addWidget(QLabel("\u9009\u62e9\u6307\u6807:"))
         self._metric_combo = QComboBox()
         self._metric_combo.setFixedWidth(140)
         self._metric_combo.setStyleSheet(
@@ -96,38 +121,72 @@ class StatisticsViewWidget(QWidget):
         sep.setStyleSheet("background: #ececec; max-height: 1px; min-height: 1px;")
         root_ly.addWidget(sep)
 
-        # canvas
         self._figure = Figure(figsize=(9, 5), dpi=100)
         self._canvas = FigureCanvasQTAgg(self._figure)
-        self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        root_ly.addWidget(self._canvas, 1)
+        self._canvas.setFixedHeight(500)
+        self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        root_ly.addWidget(self._canvas)
+
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet("background: #ececec; max-height: 1px; min-height: 1px;")
+        root_ly.addWidget(sep2)
+
+        table_title = QLabel("train_log / _stats.json")
+        table_title.setObjectName("statsTableTitle")
+        table_title.setStyleSheet("font-size: 16px; font-weight: 700; color: #1a1a1a; padding-top: 8px;")
+        root_ly.addWidget(table_title)
+
+        table_hint = QLabel("Matrix: rows = metrics, columns = samples, cells = best_value")
+        table_hint.setObjectName("statsTableHint")
+        table_hint.setStyleSheet("font-size: 11px; color: #888; padding-bottom: 4px;")
+        root_ly.addWidget(table_hint)
+
+        self._stats_table = QTableWidget()
+        self._stats_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self._stats_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._stats_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self._stats_table.verticalHeader().setDefaultSectionSize(36)
+        self._stats_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._stats_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self._stats_table.setAlternatingRowColors(False)
+        self._stats_table.setShowGrid(True)
+        root_ly.addWidget(self._stats_table)
+
+        root_ly.addStretch()
+
+        scroll.setWidget(inner)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
 
     def load_data(self) -> None:
-        """Scan train_log, populate metric selector, draw first metric."""
         if not self._mgr.has_valid_data():
-            self._draw_placeholder("\u26A0  璇峰厛涓婁紶鏁版嵁鏂囦欢澶?(Upload Data)")
+            self._draw_placeholder("\u26a0  \u8bf7\u5148\u4e0a\u4f20\u6570\u636e\u6587\u4ef6\u5939 (Upload Data)")
             self._loaded = False
             return
 
         structure = self._mgr.structure()
         if structure is None or not structure.has_train_log or not structure.train_log_metrics:
-            self._draw_placeholder("\u2139  train_log 鏈壘鍒帮紝鏆傛棤缁熻鏁版嵁鏄剧ず")
+            self._draw_placeholder("\u2139  train_log \u672a\u627e\u5230\uff0c\u6682\u65e0\u7edf\u8ba1\u6570\u636e\u663e\u793a")
             self._loaded = False
             return
 
         metrics = structure.train_log_metrics
-        # Populate combo
         self._metric_combo.blockSignals(True)
         self._metric_combo.clear()
-        for m in metrics:
-            self._metric_combo.addItem(m.upper())
+        for m in TRAIN_LOG_METRICS:
+            if m in metrics:
+                self._metric_combo.addItem(m.upper())
         self._metric_combo.blockSignals(False)
-
         self._loaded = True
-        self._metric = metrics[0].lower()
+
+        idx = max(0, self._metric_combo.findText(self._metric.upper()))
         if self._metric_combo.count() > 0:
-            self._metric_combo.setCurrentIndex(0)
+            self._metric_combo.setCurrentIndex(idx)
         self._draw()
+        self._load_stats_json_table(structure.train_log_dir)
 
     def _on_metric_changed(self, text: str) -> None:
         if not self._loaded:
@@ -135,9 +194,7 @@ class StatisticsViewWidget(QWidget):
         self._metric = text.strip().lower()
         self._draw()
 
-    # ----------------------------------------------------------------
-    # Chart drawing
-    # ----------------------------------------------------------------
+
     def _draw(self) -> None:
         structure = self._mgr.structure()
         if structure is None or not structure.has_train_log:
@@ -149,9 +206,6 @@ class StatisticsViewWidget(QWidget):
             self._draw_placeholder(f"File not found: {csv_path}")
             return
 
-        # Use the shared CSV reader and per-sample-best helper so the
-        # statistics view computes the same per-sample representative
-        # values as the overview dashboard and train_log_stats module.
         per_sample_rows, _raw, _dedup = read_metric_csv(csv_path)
         if not per_sample_rows:
             self._draw_placeholder("No data in CSV")
@@ -164,7 +218,6 @@ class StatisticsViewWidget(QWidget):
         valid = ~np.isnan(values_arr)
         valid_vals = values_arr[valid]
 
-        # Compute statistics
         if valid.any():
             mean_val = float(np.mean(valid_vals))
             median_val = float(np.median(valid_vals))
@@ -177,17 +230,15 @@ class StatisticsViewWidget(QWidget):
             mean_val = median_val = max_val = min_val = std_val = q1 = q3 = 0.0
 
         self._figure.clear()
-        # Create figure with bar chart + stats table
         gs = self._figure.add_gridspec(1, 2, width_ratios=[3, 1], wspace=0.3)
 
-        # Left: bar chart
         ax = self._figure.add_subplot(gs[0, 0])
         x = np.arange(len(labels))
         width = 0.6
         colors = ["#5b8fd9", "#3cba9a", "#4caf6e", "#d4b030", "#d48840",
                   "#d47068", "#9b6ab8", "#5ba0d0", "#e67e22", "#1abc9c",
                   "#3498db", "#e74c3c"][:len(labels)]
-        bars = ax.bar(x, values_arr, width, color=colors, edgecolor="#3a6fb5", linewidth=0.5)
+        ax.bar(x, values_arr, width, color=colors, edgecolor="#3a6fb5", linewidth=0.5)
 
         ax.axhline(y=mean_val, color="#e74c3c", linestyle="--", linewidth=1.5, label=f"Mean = {mean_val:.4f}")
         ax.axhline(y=median_val, color="#f39c12", linestyle=":", linewidth=1.5, label=f"Median = {median_val:.4f}")
@@ -199,7 +250,6 @@ class StatisticsViewWidget(QWidget):
         ax.legend(fontsize=10)
         ax.grid(axis="y", alpha=0.3)
 
-        # Right: statistics table
         ax_table = self._figure.add_subplot(gs[0, 1])
         ax_table.axis("off")
         stats_data = [
@@ -227,11 +277,7 @@ class StatisticsViewWidget(QWidget):
                 cell.set_fontsize(10)
         ax_table.set_title("Statistics", fontsize=12, fontweight="bold", pad=12)
 
-        # tight_layout() can't handle axes containing a matplotlib table,
-        # so use subplots_adjust() to avoid the UserWarning. The values below
-        # mirror the padding tight_layout would otherwise pick.
-        self._figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.18,
-                                       wspace=0.25)
+        self._figure.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.18, wspace=0.25)
         self._canvas.draw()
 
     def _draw_placeholder(self, message: str) -> None:
@@ -243,4 +289,126 @@ class StatisticsViewWidget(QWidget):
         ax.set_yticks([])
         self._figure.tight_layout()
         self._canvas.draw()
+
+
+    def _load_stats_json_table(self, train_log_dir: Path) -> None:
+        """Load _stats.json and populate the QTableWidget as a matrix."""
+        stats_path = train_log_dir / "_stats.json"
+        if not stats_path.is_file():
+            self._stats_table.setRowCount(0)
+            self._stats_table.setColumnCount(1)
+            self._stats_table.setHorizontalHeaderLabels(["No _stats.json"])
+            return
+
+        try:
+            with open(stats_path, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to read _stats.json: %s", exc)
+            self._stats_table.setRowCount(0)
+            self._stats_table.setColumnCount(1)
+            self._stats_table.setHorizontalHeaderLabels(["Read error"])
+            return
+
+        metrics_data = raw.get("metrics", {})
+        if not metrics_data:
+            self._stats_table.setRowCount(0)
+            self._stats_table.setColumnCount(1)
+            self._stats_table.setHorizontalHeaderLabels(["No metrics"])
+            return
+
+        all_images: set = set()
+        for mdata in metrics_data.values():
+            if isinstance(mdata, dict):
+                per_img = mdata.get("per_image", {})
+                if isinstance(per_img, dict):
+                    all_images.update(per_img.keys())
+        images_sorted = sorted(all_images)
+
+        metric_names = sorted(metrics_data.keys())
+
+        columns = images_sorted + ["Grand Mean", "Best Image", "Best Value"]
+
+        self._stats_table.setRowCount(len(metric_names))
+        self._stats_table.setColumnCount(len(columns))
+        self._stats_table.setHorizontalHeaderLabels(columns)
+        self._stats_table.setVerticalHeaderLabels([m.upper() for m in metric_names])
+
+        for row_idx, metric in enumerate(metric_names):
+            mdata = metrics_data.get(metric, {})
+            if not isinstance(mdata, dict):
+                continue
+            per_img = mdata.get("per_image", {}) if isinstance(mdata.get("per_image"), dict) else {}
+            grand_mean = mdata.get("grand_mean", 0.0)
+            best_image = str(mdata.get("best_image", "-"))
+            best_val = mdata.get("best_image_value", 0.0)
+
+            for col_idx, image_id in enumerate(images_sorted):
+                img_data = per_img.get(image_id, {})
+                val = img_data.get("best_value", float("nan")) if isinstance(img_data, dict) else float("nan")
+                cell_text = f"{val:.4f}" if not np.isnan(val) else "-"
+                item = QTableWidgetItem(cell_text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._stats_table.setItem(row_idx, col_idx, item)
+
+            gm_col = len(images_sorted)
+            item = QTableWidgetItem(f"{grand_mean:.4f}" if grand_mean else "-")
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._stats_table.setItem(row_idx, gm_col, item)
+
+            bi_col = len(images_sorted) + 1
+            item = QTableWidgetItem(best_image)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._stats_table.setItem(row_idx, bi_col, item)
+
+            bv_col = len(images_sorted) + 2
+            item = QTableWidgetItem(f"{best_val:.4f}" if best_val else "-")
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._stats_table.setItem(row_idx, bv_col, item)
+
+        self._apply_table_theme()
+
+    def _apply_table_theme(self) -> None:
+        if self._stats_table is None:
+            return
+        dark = self._dark
+
+        header_bg = "#2a2a2e" if dark else "#e8e8ec"
+        header_fg = "#e8e8ec" if dark else "#1a1a1a"
+        cell_bg = "#1e1e21" if dark else "#ffffff"
+        cell_fg = "#d0d0d5" if dark else "#1a1a1a"
+        grid_color = "#3a3a3e" if dark else "#e0e0e0"
+
+        header_style = (
+            f"QHeaderView::section {{"
+            f" background-color: {header_bg}; color: {header_fg};"
+            f" border: 1px solid {grid_color}; padding: 6px 8px;"
+            f" font-weight: 700; font-size: 11px; }}"
+        )
+        self._stats_table.horizontalHeader().setStyleSheet(header_style)
+        self._stats_table.verticalHeader().setStyleSheet(header_style)
+
+        self._stats_table.setStyleSheet(
+            f"QTableWidget {{"
+            f" background-color: {cell_bg}; color: {cell_fg};"
+            f" gridline-color: {grid_color}; border: 1px solid {grid_color};"
+            f" font-size: 12px; }}"
+            f"QTableWidget::item {{ padding: 4px 6px; }}"
+        )
+
+        data_col_count = self._stats_table.columnCount() - 3
+        for row in range(self._stats_table.rowCount()):
+            for col in range(max(0, data_col_count)):
+                item = self._stats_table.item(row, col)
+                if item is None:
+                    continue
+                try:
+                    v = float(item.text())
+                except ValueError:
+                    continue
+                t = min(max((v - 0.2) / 0.6, 0.0), 1.0)
+                r = int(220 * (1 - t) + 40 * t)
+                g = int(80 * (1 - t) + 180 * t)
+                b = int(80 * (1 - t) + 100 * t)
+                item.setBackground(QColor(r, g, b, 40 if dark else 30))
 
