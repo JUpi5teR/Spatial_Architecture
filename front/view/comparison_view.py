@@ -456,7 +456,7 @@ _FALLBACK_RGB = [
 ]
 
 def _normalize_label(label):
-    """Normalize label: 'Layer1' -> 1, '1' -> 1, 'WM' -> 0, '' -> None."""
+    """Normalize label: 'Layer1' -> 1, '1' -> 1, '7' -> 0 (WM), 'WM' -> 0, '' -> None."""
     if not label or str(label).upper() == "NA":
         return None
     s = str(label).strip()
@@ -468,7 +468,10 @@ def _normalize_label(label):
     if s == "WM":
         return 0
     try:
-        return int(s)
+        n = int(s)
+        if n >= 7:
+            return 0  # domain values >= 7 are White Matter
+        return n
     except ValueError:
         return None
 
