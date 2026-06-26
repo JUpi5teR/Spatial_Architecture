@@ -58,12 +58,24 @@ from utils.logger import logger
 
 
 STATS_FILENAME = "_stats.json"
-STATS_VERSION = 3
+STATS_VERSION = 4
 
 # Metric families that should be treated as "higher is better" when
 # picking the best / worst image. Loss / error-style metrics invert
 # this. The default policy matches the dashboard's metric palette.
 HIGHER_IS_BETTER: Set[str] = {"ari", "nmi", "hs", "cs", "acc", "accuracy"}
+
+FINAL_EPOCH = 900
+
+
+def _get_final_epoch(entries):
+    """Find the maximum epoch across all entries."""
+    max_e = 0
+    for e, _, _ in entries:
+        if e > max_e:
+            max_e = e
+    return max_e
+  # final training epoch for all evaluation stats
 
 
 # ---------------------------------------------------------------------------
@@ -191,12 +203,11 @@ def compute_per_sample_best(
     per_sample_rows: Dict[str, List[Tuple[int, int, float]]],
     metric: str = "",
 ) -> Dict[str, float]:
-    """For each sample, pick the strongest value across *all* epochs and seeds.
+    """For each sample, pick the strongest value at final epoch only.
 
-    Higher-better metrics (ari, nmi, hs, cs, acc): ``max(values)``.
-    Lower-better metrics (loss): last recorded value (``values[-1]``).
-
-    Returns ``{sample_id: best_value}``.
+    Filters to rows at final epoch (max epoch in data),
+    then takes max across seeds for higher-better metrics,
+    or mean across seeds for lower-better metrics.
     """
     metric_lower = metric.lower() if metric else ""
     higher_better = (metric_lower in HIGHER_IS_BETTER) if metric_lower else True
@@ -204,11 +215,14 @@ def compute_per_sample_best(
     for sample_id, entries in per_sample_rows.items():
         if not entries:
             continue
-        values = [v for _, _, v in entries]
+        fe = _get_final_epoch(entries)
+        final_entries = [v for e, _, v in entries if e == fe]
+        if not final_entries:
+            continue
         if higher_better:
-            result[sample_id] = max(values)
+            result[sample_id] = max(final_entries)
         else:
-            result[sample_id] = values[-1]
+            result[sample_id] = sum(final_entries) / len(final_entries)
     return result
 
 
@@ -343,66 +357,50 @@ def compute_image_stat(
     raw_count: int = 0,
     metric: str = "",
 ) -> ImageStat:
-    """Reduce an image's deduped ``(epoch, seed, value)`` rows to one
-    ``ImageStat``.
 
-    For higher-better metrics (``ari``, ``nmi``, ``hs``, ``cs``,
-    ``acc`` ...) ``best_value`` is the max across the rows -- "pick
-    the strongest epoch for this image".
+    """Reduce an image rows to one ImageStat, using only FINAL_EPOCH.
 
-    For lower-better metrics (notably ``loss``) ``best_value`` is the
-    value at the LAST recorded epoch -- "the final training state
-    for this image", since the latest loss is what we want to expose
-    in the dashboard. Per-image mean/variance still cover the full
-    deduped row set so the chart curves remain meaningful.
+    Filters rows to FINAL_EPOCH, then:
+    - Higher-better metrics: best_value = max across seeds.
+    - Lower-better metrics: best_value = mean across seeds.
     """
     if not entries:
         return ImageStat()
     if raw_count <= 0:
         raw_count = len(entries)
-    # ``entries`` is already deduped upstream.
+    fe = _get_final_epoch(entries)
+    final_entries = [(e, s, v) for (e, s, v) in entries if e == fe]
+    if not final_entries:
+        return ImageStat()
     dedup_count = len(entries)
-    values = [v for _, _, v in entries]
+    values = [v for _, _, v in final_entries]
     metric_lower = metric.lower() if isinstance(metric, str) else ""
     if metric_lower and metric_lower not in HIGHER_IS_BETTER:
-        # lower-better (e.g. ``loss``): the "best" representative is
-        # the value at the LAST recorded epoch. We rely on the CSV
-        # being append-ordered; ties go to the last occurrence.
-        last_idx = len(entries) - 1
-        best_epoch, best_seed, best_value = entries[last_idx]
+        best_value = sum(values) / len(values)
+        best_epoch = fe
+        best_seed = 0
     else:
-        best_idx = max(range(len(values)), key=lambda i: values[i])
-        best_epoch, best_seed, best_value = entries[best_idx]
-    epochs = {e for e, _, _ in entries}
-    seeds = {s for _, s, _ in entries}
+        best_value = max(values)
+        best_idx = values.index(best_value)
+        best_epoch, best_seed = final_entries[best_idx][0], final_entries[best_idx][1]
+    seeds = {s for _, s, _ in final_entries}
     mean_v = sum(values) / len(values)
-    # Per-image representative: the strongest value across *all*
-    # epochs and seeds. For higher-better metrics this is the max
-    # across all entries; for lower-better metrics it is the value
-    # at the last recorded epoch. That single value flows into the
-    # dataset-level combined_mean / combined_variance aggregation,
-    # so per-image variance collapses to 0 (one value, no spread).
-    final_epoch = max(epochs) if epochs else 0
-    final_epoch_mean_v = float(best_value)
-    final_epoch_var_v = 0.0
     return ImageStat(
         best_value=float(best_value),
         best_epoch=int(best_epoch),
         best_seed=int(best_seed),
         mean=float(mean_v),
-        variance=float(final_epoch_var_v),
+        variance=0.0,
         min_value=float(min(values)),
         max_value=float(max(values)),
-        epochs_seen=len(epochs),
+        epochs_seen=1,
         seeds_seen=len(seeds),
         raw_count=raw_count,
         dedup_count=dedup_count,
-        final_epoch=int(final_epoch),
-        final_epoch_mean=float(final_epoch_mean_v),
-        final_epoch_variance=float(final_epoch_var_v),
+        final_epoch=int(fe),
+        final_epoch_mean=float(best_value),
+        final_epoch_variance=0.0,
     )
-
-
 def compute_metric_stat(
     metric: str,
     per_sample_rows: Dict[str, List[Tuple[int, int, float]]],

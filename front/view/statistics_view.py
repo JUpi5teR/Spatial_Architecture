@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from model.data_path import DataPathManager, TRAIN_LOG_METRICS
-from front.model.train_log_stats import compute_per_sample_best, read_metric_csv
+from front.model.train_log_stats import compute_per_sample_best, ensure_dataset_stats, read_metric_csv
 from utils.logger import logger
 
 
@@ -293,6 +293,8 @@ class StatisticsViewWidget(QWidget):
 
     def _load_stats_json_table(self, train_log_dir: Path) -> None:
         """Load _stats.json and populate the QTableWidget as a matrix."""
+        # Regenerate cache if version mismatch
+        ensure_dataset_stats(train_log_dir)
         stats_path = train_log_dir / "_stats.json"
         if not stats_path.is_file():
             self._stats_table.setRowCount(0)
